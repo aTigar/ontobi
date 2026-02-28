@@ -1,0 +1,10 @@
+{
+  "id": "ontobi-obsidian",
+  "name": "Ontobi",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "Ontology-guided SKOS knowledge graph for Obsidian — SPARQL endpoint + graph view",
+  "author": "aTigar",
+  "authorUrl": "https://github.com/aTigar",
+  "isDesktopOnly": true
+}

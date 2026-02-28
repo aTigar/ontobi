@@ -1,0 +1,22 @@
+{
+  "name": "@ontobi/obsidian",
+  "version": "0.1.0",
+  "description": "Obsidian plugin — vault event bridge and Cytoscape.js graph view (post-MVP)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@ontobi/core": "workspace:*",
+    "cytoscape": "^3.33.0"
+  },
+  "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
+    "@types/node": "^20.0.0",
+    "obsidian": "^1.7.4"
+  }
+}
