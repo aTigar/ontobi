@@ -54,6 +54,10 @@ export class OntobiStore {
 
   /**
    * Execute a SPARQL SELECT query. Returns an array of binding maps.
+   *
+   * NOTE: Triples are stored in named graphs (one per concept file).
+   * Queries must use GRAPH ?g { ... } or GRAPH <uri> { ... } to match them.
+   * A bare WHERE { ?s ?p ?o } only queries the default graph (always empty).
    */
   query(sparql: string): SparqlResult {
     this.assertInitialized()
@@ -100,19 +104,19 @@ export class OntobiStore {
 
       SELECT DISTINCT ?node ?label ?identifier ?pred WHERE {
         {
-          <${subjectUri}> (skos:broader|skos:narrower|skos:related)${depthClause} ?node .
-          ?node skos:prefLabel ?label .
-          ?node schema:identifier ?identifier .
+          GRAPH ?g1 { <${subjectUri}> (skos:broader|skos:narrower|skos:related)${depthClause} ?node . }
+          GRAPH ?g2 { ?node skos:prefLabel ?label . }
+          GRAPH ?g3 { ?node schema:identifier ?identifier . }
           BIND("outgoing" AS ?pred)
         } UNION {
-          ?node (skos:broader|skos:narrower|skos:related)${depthClause} <${subjectUri}> .
-          ?node skos:prefLabel ?label .
-          ?node schema:identifier ?identifier .
+          GRAPH ?g4 { ?node (skos:broader|skos:narrower|skos:related)${depthClause} <${subjectUri}> . }
+          GRAPH ?g5 { ?node skos:prefLabel ?label . }
+          GRAPH ?g6 { ?node schema:identifier ?identifier . }
           BIND("incoming" AS ?pred)
         } UNION {
           BIND(<${subjectUri}> AS ?node)
-          <${subjectUri}> skos:prefLabel ?label .
-          <${subjectUri}> schema:identifier ?identifier .
+          GRAPH ?g7 { <${subjectUri}> skos:prefLabel ?label . }
+          GRAPH ?g8 { <${subjectUri}> schema:identifier ?identifier . }
           BIND("self" AS ?pred)
         }
       }
@@ -123,7 +127,7 @@ export class OntobiStore {
 
       SELECT DISTINCT ?source ?target ?relation WHERE {
         VALUES ?relation { skos:broader skos:narrower skos:related }
-        ?source ?relation ?target .
+        GRAPH ?g { ?source ?relation ?target . }
         FILTER(?source = <${subjectUri}> || ?target = <${subjectUri}>)
       }
     `
