@@ -1,5 +1,4 @@
 import type { GraphData, SparqlResult, SparqlBindings } from '../types.js'
-import { SKOS } from '../parser/prefix-map.js'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { existsSync } from 'node:fs'
