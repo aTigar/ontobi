@@ -81,28 +81,22 @@ flowchart TB
 
 ## Components
 
-### `ontobi-core` — Core Binary (Rust) ⚠️ Migration in Progress
+### `ontobi-core` — Core Binary (Rust)
 
-> **Replacing `@ontobi/core`** — `@ontobi/core` (TypeScript + Oxigraph WASM) is being migrated to `ontobi-core`, a native Rust binary. Tracked in [#20](https://github.com/aTigar/ontobi/issues/20). The wire protocol (SPARQL HTTP endpoint) is identical, so `@ontobi/mcp` requires no changes.
+Standalone Rust binary. No Node.js or Obsidian dependency.
 
-`ontobi-core` is a standalone Rust binary with no Node.js or Obsidian dependency.
-
-| Module | Responsibility | Status |
-|---|---|---|
-| **parser** (`parser/wikilink.rs`, `parser/frontmatter.rs`) | `serde_yaml` frontmatter extraction; wikilink resolver; date normaliser; produces `ConceptMetadata` | ✅ Complete |
-| **triples** (`triples/mod.rs`) | Converts `ConceptMetadata` to N-Quads strings; assigns each concept to its named graph (`file:///...`) for incremental invalidation | ✅ Complete |
-| **store** (`store/mod.rs`) | `OntobiStore` wrapping `oxigraph::store::Store` (in-memory, no RocksDB); N-Quads persistence; union-graph SPARQL | 🔜 Step 3 |
-| **endpoint** (`endpoint/mod.rs`) | axum HTTP server on `localhost:14321`; `GET ?query=` and `POST`; identical wire format to TypeScript predecessor | 🔜 Step 4 |
-| **watcher** (`watcher/mod.rs`) | `notify-debouncer-mini` recursive vault watcher; calls `store.reindex_file()` / `store.remove_file()` | 🔜 Step 5 |
-| **CLI** (`main.rs`) | `ontobi serve --vault <path> [--index]` and `ontobi index`; graceful SIGINT shutdown | 🔜 Step 5 |
-
-### `@ontobi/core` — Core Library (TypeScript) — Deprecated
-
-Standalone TypeScript library. Will be deleted when `ontobi-core` migration is complete (see [#26](https://github.com/aTigar/ontobi/issues/26)).
+| Module | Responsibility |
+|---|---|
+| **parser** (`parser/wikilink.rs`, `parser/frontmatter.rs`) | `serde_yaml` frontmatter extraction; wikilink resolver; date normaliser; produces `ConceptMetadata` |
+| **triples** (`triples/mod.rs`) | Converts `ConceptMetadata` to N-Quads strings; places each concept in its own named graph (`file:///...`) for incremental invalidation |
+| **store** (`store/mod.rs`) | `OntobiStore` wrapping `oxigraph::store::Store` (in-memory, no RocksDB); N-Quads persistence to `.ontobi/store.nq`; union-graph SPARQL |
+| **endpoint** (`endpoint/mod.rs`) | axum HTTP server on `localhost:14321`; `GET /sparql?query=` and `POST /sparql`; returns `application/sparql-results+json` |
+| **watcher** (`watcher/mod.rs`) | `notify-debouncer-mini` recursive vault watcher; debounced 500 ms; calls `store.reindex_file()` / `store.remove_file()` |
+| **CLI** (`main.rs`) | `ontobi serve --vault <path> [--index]` and `ontobi index`; graceful SIGINT shutdown with N-Quads persistence |
 
 ### `@ontobi/mcp` — MCP Server
 
-Separate process. Queries `@ontobi/core`'s SPARQL endpoint on demand. No local graph, no Obsidian dependency.
+Separate process. Queries `ontobi-core`'s SPARQL endpoint on demand. No local graph, no Obsidian dependency.
 
 | Tool | Input | Action | Returns |
 |---|---|---|---|
@@ -114,10 +108,10 @@ Config via environment: `ONTOBI_SPARQL_ENDPOINT` (default `http://localhost:1432
 
 ### `@ontobi/obsidian` — Obsidian Plugin *(post-MVP)*
 
-Thin UI wrapper. Imports `@ontobi/core` as an npm dependency (in-process). Adds no graph logic.
+Thin UI wrapper. Communicates with `ontobi-core` via HTTP. No direct import of the Rust binary.
 
-- **Vault event bridge** — `vault.on('modify' | 'delete' | 'rename')` → `core.reindexFile()` / `core.removeFile()`
-- **Graph view** — `core.getNeighbourhood(id, depth)` → Cytoscape.js canvas inside an Obsidian leaf
+- **Vault event bridge** — `vault.on('modify' | 'delete' | 'rename')` → HTTP to `ontobi-core`
+- **Graph view** — SPARQL query to `localhost:14321` → Cytoscape.js canvas inside an Obsidian leaf
 - **Settings** — port, persistence path, index-on-load toggle
 
 > The full pipeline (index → SPARQL → MCP → LLM agent) runs **headless via CLI alone**. The plugin is only required for the graph view inside Obsidian.
