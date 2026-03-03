@@ -1,0 +1,3 @@
+[workspace]
+members = ["ontobi-core"]
+resolver = "2"

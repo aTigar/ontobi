@@ -2,6 +2,10 @@
 dist/
 *.tsbuildinfo
 
+# Rust build artifacts
+target/
+Cargo.lock
+
 # Dependencies
 node_modules/
 
