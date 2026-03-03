@@ -41,12 +41,12 @@ pub async fn serve(store: OntobiStore, port: u16) -> anyhow::Result<()> {
 
 /// Query parameters for GET requests.
 #[derive(Deserialize)]
-struct GetParams {
+pub struct GetParams {
     query: Option<String>,
 }
 
 /// Axum handler for all HTTP methods on `/sparql`.
-async fn sparql_handler(
+pub async fn sparql_handler(
     method: Method,
     headers: HeaderMap,
     State(store): State<OntobiStore>,

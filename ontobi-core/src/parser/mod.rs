@@ -1,5 +1,5 @@
-mod frontmatter;
 pub mod wikilink;
+mod frontmatter;
 
 pub use frontmatter::parse_frontmatter;
 pub use wikilink::{file_path_to_graph_uri, graph_uri_to_file_path, label_to_identifier};

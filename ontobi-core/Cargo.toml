@@ -9,6 +9,10 @@ license = "MIT"
 name = "ontobi"
 path = "src/main.rs"
 
+[lib]
+name = "ontobi_core"
+path = "src/lib.rs"
+
 [dependencies]
 # RDF / SPARQL — disable RocksDB (we use in-memory store with N-Quads persistence)
 oxigraph = { version = "0.4", default-features = false }
