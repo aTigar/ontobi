@@ -8,15 +8,18 @@ Ontology-guided retrieval for knowledge bases — SKOS concept graphs via MCP.
 
 ## Packages
 
-| Package | Status | Description |
-|---|---|---|
-| [`@ontobi/core`](packages/core) | 🚧 Phase 1 | Standalone TypeScript library: SKOS parser, Oxigraph RDF store, SPARQL 1.1 endpoint, CLI |
-| [`@ontobi/mcp`](packages/mcp) | 🔜 Phase 2 | MCP server: 3 tools for LLM agent retrieval scoped by SKOS ontology |
-| [`@ontobi/obsidian`](packages/obsidian) | 🔜 Phase 3 | Obsidian plugin: vault event bridge + Cytoscape.js graph view |
+| Package | Language | Status | Description |
+|---|---|---|---|
+| [`ontobi-core`](ontobi-core) | Rust | 🚧 Migrating | Native binary: SKOS parser, Oxigraph RDF store, SPARQL 1.1 endpoint, file watcher, CLI |
+| [`@ontobi/core`](packages/core) | TypeScript | ⚠️ Deprecated | Will be deleted once `ontobi-core` is complete (tracked in [#26](https://github.com/aTigar/ontobi/issues/26)) |
+| [`@ontobi/mcp`](packages/mcp) | TypeScript | 🔜 Phase 2 | MCP server: 3 tools for LLM agent retrieval scoped by SKOS ontology |
+| [`@ontobi/obsidian`](packages/obsidian) | TypeScript | 🔜 Phase 3 | Obsidian plugin: vault event bridge + Cytoscape.js graph view |
+
+> **Migration in progress** — `@ontobi/core` (TypeScript + Oxigraph WASM) is being replaced by `ontobi-core`, a native Rust binary using the Oxigraph 0.4 crate directly. See [#20](https://github.com/aTigar/ontobi/issues/20) for the tracking issue.
 
 ## How it works
 
-1. **`@ontobi/core`** starts first — parses `.md` frontmatter into an Oxigraph RDF triplestore and exposes it as a SPARQL 1.1 endpoint on `localhost:14321`
+1. **`ontobi-core`** starts first — parses `.md` frontmatter into an Oxigraph RDF triplestore and exposes it as a SPARQL 1.1 endpoint on `localhost:14321`
 2. **`@ontobi/mcp`** connects to that endpoint — 3 MCP tools let LLM agents navigate the SKOS ontology before loading document content
 3. **`@ontobi/obsidian`** (optional) — thin Obsidian plugin that bridges vault change events to core and renders a Cytoscape.js graph view
 
@@ -24,28 +27,31 @@ The design principle is **metadata-first, content-on-demand**: the agent inspect
 
 ## Quick Start
 
-> Requires Node.js ≥ 20.19 and pnpm ≥ 10.
+> Requires Rust ≥ 1.75 (`rustup`) and Node.js ≥ 20.19 with pnpm ≥ 10.
 
 ```bash
-# Install
-pnpm install
-
-# Build all packages
-pnpm build
+# Build the Rust binary
+cargo build --release -p ontobi-core
 
 # Index vault and start SPARQL endpoint (port 14321)
-pnpm --filter @ontobi/core exec ontobi serve --vault /path/to/vault --index
+./target/release/ontobi serve --vault /path/to/vault --index
 
 # Start MCP server (separate terminal)
+pnpm install && pnpm build
 ONTOBI_VAULT_PATH=/path/to/vault pnpm --filter @ontobi/mcp exec ontobi-mcp
 ```
 
 ## Development
 
 ```bash
-pnpm install       # install all deps (hoisted + per-package)
-pnpm build         # tsc --build (incremental, respects project references)
-pnpm test          # vitest across @ontobi/core + @ontobi/mcp
+# Rust (ontobi-core)
+cargo build -p ontobi-core    # debug build
+cargo test -p ontobi-core     # run unit tests
+
+# TypeScript (mcp, obsidian)
+pnpm install
+pnpm build         # tsc --build (incremental)
+pnpm test          # vitest for @ontobi/mcp
 pnpm typecheck     # type-check without emitting
 pnpm lint          # eslint all packages
 pnpm format        # prettier all packages

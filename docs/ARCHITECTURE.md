@@ -81,18 +81,24 @@ flowchart TB
 
 ## Components
 
-### `@ontobi/core` — Core Library
+### `ontobi-core` — Core Binary (Rust) ⚠️ Migration in Progress
 
-Standalone TypeScript library with zero Obsidian dependency. Runs headless via CLI or embedded inside the Obsidian plugin.
+> **Replacing `@ontobi/core`** — `@ontobi/core` (TypeScript + Oxigraph WASM) is being migrated to `ontobi-core`, a native Rust binary. Tracked in [#20](https://github.com/aTigar/ontobi/issues/20). The wire protocol (SPARQL HTTP endpoint) is identical, so `@ontobi/mcp` requires no changes.
 
-| Module | Responsibility |
-|---|---|
-| **Frontmatter Parser** | Reads `.md` files with `gray-matter`; maps `skos:*` and `schema:*` prefixes to full URIs via a custom prefix mapper; resolves `[[wikilinks]]` to concept identifiers; normalises date formats |
-| **Triple Generator** | Converts `ConceptMetadata` to N-Quads using `n3`; assigns each concept to its own named graph (`file:///path/to/file.md`) for incremental invalidation |
-| **Oxigraph Store** | In-memory Oxigraph WASM triplestore; SPARQL 1.1 including property paths; persistence via N-Quads dump/restore to `.ontobi/store.nq` |
-| **SPARQL Endpoint** | Node.js `http` server on `localhost:14321`; accepts `GET ?query=` and `POST`; consumed by `@ontobi/mcp` |
-| **OntobiCore** | Main API class — lifecycle, index management, and query interface |
-| **CLI** | `ontobi serve --vault <path> [--index]` with chokidar file watching; `ontobi index` for one-shot rebuild |
+`ontobi-core` is a standalone Rust binary with no Node.js or Obsidian dependency.
+
+| Module | Responsibility | Status |
+|---|---|---|
+| **parser** (`parser/wikilink.rs`, `parser/frontmatter.rs`) | `serde_yaml` frontmatter extraction; wikilink resolver; date normaliser; produces `ConceptMetadata` | ✅ Complete |
+| **triples** (`triples/mod.rs`) | Converts `ConceptMetadata` to N-Quads strings; assigns each concept to its named graph (`file:///...`) for incremental invalidation | ✅ Complete |
+| **store** (`store/mod.rs`) | `OntobiStore` wrapping `oxigraph::store::Store` (in-memory, no RocksDB); N-Quads persistence; union-graph SPARQL | 🔜 Step 3 |
+| **endpoint** (`endpoint/mod.rs`) | axum HTTP server on `localhost:14321`; `GET ?query=` and `POST`; identical wire format to TypeScript predecessor | 🔜 Step 4 |
+| **watcher** (`watcher/mod.rs`) | `notify-debouncer-mini` recursive vault watcher; calls `store.reindex_file()` / `store.remove_file()` | 🔜 Step 5 |
+| **CLI** (`main.rs`) | `ontobi serve --vault <path> [--index]` and `ontobi index`; graceful SIGINT shutdown | 🔜 Step 5 |
+
+### `@ontobi/core` — Core Library (TypeScript) — Deprecated
+
+Standalone TypeScript library. Will be deleted when `ontobi-core` migration is complete (see [#26](https://github.com/aTigar/ontobi/issues/26)).
 
 ### `@ontobi/mcp` — MCP Server
 
@@ -123,43 +129,51 @@ Thin UI wrapper. Imports `@ontobi/core` as an npm dependency (in-process). Adds 
 | Decision | Choice | Rejected | Rationale |
 |---|---|---|---|
 | **Graph standard** | RDF — triples + named graphs | LPG (Graphology, NetworkX) | SKOS and Schema.org are native RDF vocabularies; one graph, no schema mapping |
-| **Triplestore** | Oxigraph WASM v0.5.5 (npm, in-process) | Graphology + NetworkX (Python) | Single store, SPARQL 1.1 property paths, runs in Electron without a separate service |
-| **Query language** | SPARQL 1.1 property paths | Custom BFS/DFS | `(skos:narrower\|skos:related){1,3}` replaces all manual traversal; W3C standard |
-| **Persistence** | Manual N-Quads dump/restore | RocksDB | Oxigraph npm/WASM build is in-memory only — disk persistence requires explicit `store.dump()` on shutdown and `store.load()` on startup |
-| **Cross-process bridge** | localhost SPARQL HTTP | `graph.json` file export | No file I/O per query; MCP server fetches only the neighbourhood it needs |
-| **MCP server language** | TypeScript | Python | Same runtime as `@ontobi/core`; no language boundary; shared `oxigraph` npm package |
-| **Prefix expansion** | Custom mapper (~50 LOC) | `jsonld` npm package | Fixed vocabulary (SKOS + Schema.org only); avoids a dependency that pulls in an HTTP client |
-| **Visualisation** | Cytoscape.js in `@ontobi/obsidian` | Cytoscape.js in `@ontobi/core` | Cytoscape.js requires a DOM; core must be headless-safe for CLI and CI |
-| **File watching** | Caller-owned (CLI: chokidar · plugin: Obsidian events) | Built-in watcher in core | Avoids duplicate watchers in Obsidian; keeps core a pure stateless engine |
-| **Content retrieval** | `fs.readFile(vaultPath + relPath)` in `@ontobi/mcp` | Obsidian `vault.read()` | `.md` files are plain files on disk; concept path is encoded in the named graph URI |
+| **Core implementation** | Rust native binary (`ontobi-core`) | TypeScript + Oxigraph WASM | Eliminates WASM overhead; native Oxigraph crate has full API parity; no `dlltool`/MSVC on Windows required when using `default-features = false` (no RocksDB) |
+| **Triplestore** | Oxigraph 0.4 crate (native Rust, in-memory) | Oxigraph WASM npm, RocksDB | Single crate; SPARQL 1.1 property paths; avoids Electron WASM compilation quirks |
+| **Query language** | SPARQL 1.1 with `set_default_graph_as_union()` | Custom BFS/DFS | All data lives in named graphs (one per file); union-default-graph mode makes plain `SELECT` queries transparent to callers |
+| **Persistence** | Manual N-Quads dump/restore | RocksDB | `default-features = false` disables RocksDB; N-Quads round-trip is sufficient for vault sizes |
+| **Cross-process bridge** | localhost SPARQL HTTP (identical wire format) | `graph.json` file export | `@ontobi/mcp`'s `SparqlClient` requires zero changes; endpoint POST body = raw SPARQL string |
+| **MCP server language** | TypeScript (unchanged) | Rust | `@ontobi/mcp` stays TypeScript; Rust core is a separate process connected via HTTP, not an in-process dependency |
+| **Prefix expansion** | Custom `serde_yaml` deserialization + URI constants | `jsonld` crate | Fixed vocabulary (SKOS + Schema.org); ~50 LOC; avoids a heavy dependency |
+| **Visualisation** | Cytoscape.js in `@ontobi/obsidian` | Cytoscape.js in core | Core must be headless-safe (no DOM) |
+| **File watching** | `notify-debouncer-mini` inside the Rust binary | `chokidar` (Node.js) | Rust-native; no Node.js process required alongside the binary |
+| **Content retrieval** | `fs.readFile(vaultPath + relPath)` in `@ontobi/mcp` | Obsidian `vault.read()` | `.md` files are plain files; concept path encoded in named graph URI |
 
 ---
 
-## Core API
+## CLI Reference (`ontobi-core`)
 
-```typescript
-interface OntobiConfig {
-  vaultPath: string         // absolute path to vault root
-  sparqlPort?: number       // default: 14321
-  persistencePath?: string  // default: <vaultPath>/.ontobi/store.nq
-}
+```
+# Start SPARQL endpoint, optionally index vault first
+ontobi serve --vault <path> [--port 14321] [--index]
 
-interface GraphData {
-  nodes: Array<{ id: string; label: string; identifier: string; filePath: string }>
-  edges: Array<{ source: string; target: string; relation: 'broader' | 'narrower' | 'related' }>
-}
+# One-shot index and exit (for CI / cache rebuild)
+ontobi index --vault <path>
+```
 
-class OntobiCore {
-  constructor(config: OntobiConfig)
+The endpoint listens on `127.0.0.1:<port>` and accepts:
 
-  start(): Promise<void>                       // init store + SPARQL endpoint; restore N-Quads if present
-  stop(): Promise<void>                        // stop endpoint + dump store to disk
+```
+GET  /sparql?query=<url-encoded-SPARQL>
+POST /sparql                              # body: raw SPARQL string
+                                          # Content-Type: application/sparql-query
+                                          # → application/sparql-results+json
+```
 
-  indexVault(): Promise<void>                  // glob *.md → parse → load (caller triggers; not auto on start)
-  reindexFile(path: string): Promise<void>     // clear named graph → reparse → reload
-  removeFile(path: string): Promise<void>      // drop named graph for deleted file
+## Store API (Rust, `OntobiStore`)
 
-  query(sparql: string): Promise<SparqlResult>
-  getNeighbourhood(conceptId: string, depth?: number): Promise<GraphData>
+```rust
+pub struct OntobiStore { /* Arc-backed, Clone = shared handle */ }
+
+impl OntobiStore {
+    pub fn new() -> Result<Self>
+    pub fn load_from_file(&self, path: &Path) -> Result<()>
+    pub fn dump_to_file(&self, path: &Path) -> Result<()>
+    pub fn reindex_file(&self, vault_path: &Path, file_path: &Path) -> Result<()>
+    pub fn remove_file(&self, vault_path: &Path, file_path: &Path) -> Result<()>
+    pub fn index_vault(&self, vault_path: &Path) -> Result<usize>
+    pub fn query_json(&self, sparql: &str) -> Result<Vec<u8>>   // SPARQL JSON bytes
+    pub fn query_bool(&self, sparql: &str) -> Result<bool>      // ASK queries
 }
 ```
