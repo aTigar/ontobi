@@ -1,8 +1,8 @@
-mod wikilink;
 mod frontmatter;
+pub mod wikilink;
 
 pub use frontmatter::parse_frontmatter;
-pub use wikilink::{label_to_identifier, file_path_to_graph_uri, graph_uri_to_file_path};
+pub use wikilink::{file_path_to_graph_uri, graph_uri_to_file_path, label_to_identifier};
 
 /// Parsed representation of a SKOS concept from Obsidian frontmatter.
 #[derive(Debug, Clone)]

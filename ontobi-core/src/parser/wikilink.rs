@@ -5,6 +5,7 @@
 ///
 /// # Examples
 /// ```
+/// # use ontobi_core::parser::wikilink::resolve_wikilink;
 /// assert_eq!(resolve_wikilink("[[K-Means Clustering]]"), "K-Means Clustering");
 /// assert_eq!(resolve_wikilink("K-Means Clustering"),     "K-Means Clustering");
 /// ```
@@ -32,21 +33,19 @@ pub fn resolve_wikilink(value: &str) -> &str {
 ///
 /// # Examples
 /// ```
+/// # use ontobi_core::parser::wikilink::label_to_identifier;
 /// assert_eq!(label_to_identifier("K-Means Clustering"), "concept-k-means-clustering");
 /// assert_eq!(label_to_identifier("Bootstrap Aggregation (Bagging)"), "concept-bootstrap-aggregation-bagging");
 /// ```
 pub fn label_to_identifier(label: &str) -> String {
     let slug = label
         .to_lowercase()
-        .replace(['(', ')'], "")   // strip parentheses
+        .replace(['(', ')'], "") // strip parentheses
         .trim()
         .to_string();
 
     // replace runs of whitespace with a single hyphen
-    let slug: String = slug
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-");
+    let slug: String = slug.split_whitespace().collect::<Vec<_>>().join("-");
 
     // keep only [a-z0-9-]
     let slug: String = slug
@@ -65,19 +64,58 @@ pub fn label_to_identifier(label: &str) -> String {
 
 /// Build the named-graph URI for a vault file path.
 ///
+/// Percent-encodes any byte that is not safe in an RFC 3987 IRI path segment,
+/// so concept files whose names contain spaces, `?`, `#`, `[`, `]`, etc. produce
+/// valid IRIs that Oxigraph accepts as named-graph identifiers.
+///
 /// # Examples
 /// ```
-/// assert_eq!(file_path_to_graph_uri("_concepts/Centroid.md"), "file:///_concepts/Centroid.md");
+/// # use ontobi_core::parser::wikilink::file_path_to_graph_uri;
+/// assert_eq!(file_path_to_graph_uri("_concepts/Centroid.md"),
+///            "file:///_concepts/Centroid.md");
+/// assert_eq!(file_path_to_graph_uri("_concepts/Activation Functions.md"),
+///            "file:///_concepts/Activation%20Functions.md");
 /// ```
 pub fn file_path_to_graph_uri(rel_path: &str) -> String {
     let normalized = rel_path.replace('\\', "/");
     let stripped = normalized.trim_start_matches('/');
-    format!("file:///{stripped}")
+    let encoded = iri_encode_path(stripped);
+    format!("file:///{encoded}")
 }
 
 /// Resolve a named-graph URI back to a relative file path.
-pub fn graph_uri_to_file_path(graph_uri: &str) -> &str {
-    graph_uri.trim_start_matches("file:///")
+///
+/// Reverses the percent-encoding applied by [`file_path_to_graph_uri`].
+///
+/// # Examples
+/// ```
+/// # use ontobi_core::parser::wikilink::graph_uri_to_file_path;
+/// assert_eq!(
+///     graph_uri_to_file_path("file:///_concepts/Activation%20Functions.md"),
+///     "_concepts/Activation Functions.md"
+/// );
+/// ```
+pub fn graph_uri_to_file_path(graph_uri: &str) -> String {
+    let path = graph_uri.trim_start_matches("file:///");
+    let mut result = String::with_capacity(path.len());
+    let mut bytes = path.bytes().peekable();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let hi = bytes.next().unwrap_or(b'0') as char;
+            let lo = bytes.next().unwrap_or(b'0') as char;
+            if let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                result.push(byte as char);
+                continue;
+            }
+            // Not a valid escape — emit literally
+            result.push('%');
+            result.push(hi);
+            result.push(lo);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
 }
 
 /// Normalize a date field that may be a wikilink or a plain ISO string.
@@ -102,15 +140,58 @@ pub fn normalize_date(raw: &str) -> String {
     inner.to_string()
 }
 
+// ── IRI path encoder ─────────────────────────────────────────────────────────
+
+/// Percent-encode bytes that are not safe in an RFC 3987 IRI path.
+///
+/// Safe set (kept as-is): unreserved (`A-Z a-z 0-9 - . _ ~`),
+/// sub-delimiters (`! $ & ' ( ) * + , ; =`), plus `:`, `@`, `/`.
+fn iri_encode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@'
+            | b'/' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 // ── private helpers ──────────────────────────────────────────────────────────
 
 fn parse_dmy_dot(s: &str) -> Option<String> {
     // DD.MM.YYYY  (10 chars exactly)
-    if s.len() != 10 { return None; }
+    if s.len() != 10 {
+        return None;
+    }
     let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let (dd, mm, yyyy) = (parts[0], parts[1], parts[2]);
-    if dd.len() == 2 && mm.len() == 2 && yyyy.len() == 4
+    if dd.len() == 2
+        && mm.len() == 2
+        && yyyy.len() == 4
         && dd.chars().all(|c| c.is_ascii_digit())
         && mm.chars().all(|c| c.is_ascii_digit())
         && yyyy.chars().all(|c| c.is_ascii_digit())
@@ -122,12 +203,18 @@ fn parse_dmy_dot(s: &str) -> Option<String> {
 
 fn parse_dmy_dash(s: &str) -> Option<String> {
     // DD-MM-YYYY  (10 chars exactly) — must NOT match YYYY-MM-DD
-    if s.len() != 10 { return None; }
+    if s.len() != 10 {
+        return None;
+    }
     let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let (a, b, c) = (parts[0], parts[1], parts[2]);
     // DD-MM-YYYY: a and b are 2-digit, c is 4-digit
-    if a.len() == 2 && b.len() == 2 && c.len() == 4
+    if a.len() == 2
+        && b.len() == 2
+        && c.len() == 4
         && a.chars().all(|c| c.is_ascii_digit())
         && b.chars().all(|c| c.is_ascii_digit())
         && c.chars().all(|c| c.is_ascii_digit())
@@ -165,12 +252,18 @@ mod tests {
 
     #[test]
     fn resolve_wikilink_brackets() {
-        assert_eq!(resolve_wikilink("[[K-Means Clustering]]"), "K-Means Clustering");
+        assert_eq!(
+            resolve_wikilink("[[K-Means Clustering]]"),
+            "K-Means Clustering"
+        );
     }
 
     #[test]
     fn label_to_identifier_basic() {
-        assert_eq!(label_to_identifier("K-Means Clustering"), "concept-k-means-clustering");
+        assert_eq!(
+            label_to_identifier("K-Means Clustering"),
+            "concept-k-means-clustering"
+        );
     }
 
     #[test]
@@ -187,6 +280,37 @@ mod tests {
             file_path_to_graph_uri("_concepts/Centroid.md"),
             "file:///_concepts/Centroid.md"
         );
+    }
+
+    #[test]
+    fn file_path_to_graph_uri_encodes_spaces() {
+        assert_eq!(
+            file_path_to_graph_uri("_concepts/Activation Functions.md"),
+            "file:///_concepts/Activation%20Functions.md"
+        );
+    }
+
+    #[test]
+    fn file_path_to_graph_uri_encodes_special_chars() {
+        assert_eq!(
+            file_path_to_graph_uri("_concepts/Why? Because.md"),
+            "file:///_concepts/Why%3F%20Because.md"
+        );
+    }
+
+    #[test]
+    fn graph_uri_to_file_path_decodes() {
+        assert_eq!(
+            graph_uri_to_file_path("file:///_concepts/Activation%20Functions.md"),
+            "_concepts/Activation Functions.md"
+        );
+    }
+
+    #[test]
+    fn graph_uri_to_file_path_roundtrip() {
+        let original = "_concepts/Why? Because #1.md";
+        let uri = file_path_to_graph_uri(original);
+        assert_eq!(graph_uri_to_file_path(&uri), original);
     }
 
     #[test]
