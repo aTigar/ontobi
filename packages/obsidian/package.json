@@ -11,7 +11,6 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@ontobi/core": "workspace:*",
     "cytoscape": "^3.33.0"
   },
   "devDependencies": {

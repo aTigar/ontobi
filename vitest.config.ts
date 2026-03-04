@@ -5,13 +5,6 @@ export default defineConfig({
     projects: [
       {
         test: {
-          name: 'core',
-          root: './packages/core',
-          include: ['test/**/*.test.ts'],
-        },
-      },
-      {
-        test: {
           name: 'mcp',
           root: './packages/mcp',
           include: ['test/**/*.test.ts'],

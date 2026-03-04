@@ -10,12 +10,9 @@ Ontology-guided retrieval for knowledge bases — SKOS concept graphs via MCP.
 
 | Package | Language | Status | Description |
 |---|---|---|---|
-| [`ontobi-core`](ontobi-core) | Rust | 🚧 Migrating | Native binary: SKOS parser, Oxigraph RDF store, SPARQL 1.1 endpoint, file watcher, CLI |
-| [`@ontobi/core`](packages/core) | TypeScript | ⚠️ Deprecated | Will be deleted once `ontobi-core` is complete (tracked in [#26](https://github.com/aTigar/ontobi/issues/26)) |
+| [`ontobi-core`](ontobi-core) | Rust | 🚧 Phase 1 | Native binary: SKOS parser, Oxigraph RDF store, SPARQL 1.1 endpoint, file watcher, CLI |
 | [`@ontobi/mcp`](packages/mcp) | TypeScript | 🔜 Phase 2 | MCP server: 3 tools for LLM agent retrieval scoped by SKOS ontology |
 | [`@ontobi/obsidian`](packages/obsidian) | TypeScript | 🔜 Phase 3 | Obsidian plugin: vault event bridge + Cytoscape.js graph view |
-
-> **Migration in progress** — `@ontobi/core` (TypeScript + Oxigraph WASM) is being replaced by `ontobi-core`, a native Rust binary using the Oxigraph 0.4 crate directly. See [#20](https://github.com/aTigar/ontobi/issues/20) for the tracking issue.
 
 ## How it works
 
@@ -67,9 +64,9 @@ See the [GitHub milestones](https://github.com/aTigar/ontobi/milestones) for the
 
 | Milestone | Target | Scope |
 |---|---|---|
-| [v0.1.0 — MVP](https://github.com/aTigar/ontobi/milestone/1) | Mar 7 | `@ontobi/core` + `@ontobi/mcp` functional, experiment-ready |
+| [v0.1.0 — MVP](https://github.com/aTigar/ontobi/milestone/1) | Mar 7 | `ontobi-core` + `@ontobi/mcp` functional, experiment-ready |
 | [v0.2.0 — Plugin](https://github.com/aTigar/ontobi/milestone/2) | Mar 15 | `@ontobi/obsidian` Cytoscape.js view + vault event bridge |
-| [v0.3.0 — Hardened](https://github.com/aTigar/ontobi/milestone/3) | Mar 25 | Error handling, logging, npm publish, docs |
+| [v0.3.0 — Hardened](https://github.com/aTigar/ontobi/milestone/3) | Mar 25 | Error handling, logging, docs |
 
 ## Research Context
 
