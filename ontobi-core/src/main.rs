@@ -4,7 +4,7 @@ mod triples;
 mod endpoint;
 mod watcher;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -18,21 +18,24 @@ struct Cli {
 enum Commands {
     /// Index a vault and start the SPARQL endpoint
     Serve {
-        /// Path to the Obsidian vault root
+        /// Path to the Obsidian vault root.
+        /// Falls back to the ONTOBI_VAULT_PATH environment variable if not set.
         #[arg(long)]
-        vault: String,
+        vault: Option<String>,
         /// SPARQL endpoint port (default: 14321)
         #[arg(long, default_value_t = 14321)]
         port: u16,
-        /// Index vault on startup (default: true)
-        #[arg(long, default_value_t = true)]
-        index: bool,
+        /// Skip vault indexing on startup and load from persisted store.nq instead.
+        /// Useful for fast restarts when the vault has not changed.
+        #[arg(long, default_value_t = false)]
+        no_index: bool,
     },
-    /// Index a vault and exit (no server)
+    /// Index a vault and exit (no server). Writes store.nq for fast cold starts.
     Index {
-        /// Path to the Obsidian vault root
+        /// Path to the Obsidian vault root.
+        /// Falls back to the ONTOBI_VAULT_PATH environment variable if not set.
         #[arg(long)]
-        vault: String,
+        vault: Option<String>,
     },
 }
 
@@ -49,13 +52,27 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Serve { vault, port, index } => {
-            watcher::serve(vault, port, index).await?;
+        Commands::Serve { vault, port, no_index } => {
+            let vault = resolve_vault(vault)?;
+            watcher::serve(vault, port, !no_index).await?;
         }
         Commands::Index { vault } => {
+            let vault = resolve_vault(vault)?;
             store::index_vault_and_exit(&vault).await?;
         }
     }
 
     Ok(())
+}
+
+/// Resolve the vault path from the CLI argument or the ONTOBI_VAULT_PATH env var.
+///
+/// `--vault` takes precedence. If neither is provided the binary exits with a
+/// clear error rather than a cryptic panic.
+fn resolve_vault(vault: Option<String>) -> Result<String> {
+    vault
+        .or_else(|| std::env::var("ONTOBI_VAULT_PATH").ok())
+        .context(
+            "vault path is required: use --vault <path> or set the ONTOBI_VAULT_PATH environment variable",
+        )
 }
