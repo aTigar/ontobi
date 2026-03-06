@@ -230,22 +230,55 @@ converted to `concept-k-means-clustering` at index time.
 
 ## 4. MCP server
 
-Build the TypeScript packages if not already done:
+> [!NOTE] `node` not recognised in PowerShell?
+> Node.js is installed but PowerShell caches the PATH from when it opened.
+> **Close and reopen PowerShell** — Node will be found in the new session.
+> If it still fails, run `$env:PATH += ";C:\Program Files\nodejs"` to add it manually.
+
+### 4.1 Build the TypeScript packages
+
+Skip if you have already run this in the current session.
+
+**Git Bash / WSL:**
 
 ```bash
 pnpm build
 ```
 
-Start the MCP server in a new terminal:
+**PowerShell:**
+
+```powershell
+pnpm build
+```
+
+`pnpm build` compiles all TypeScript source under `packages/` to JavaScript in
+their respective `dist/` folders. The MCP server entry point ends up at
+`packages/mcp/dist/index.js`.
+
+### 4.2 Start the MCP server
+
+The MCP server communicates over **stdio** — it is designed to be launched as a
+subprocess by an MCP host (Claude Code, Claude Desktop) which pipes JSON-RPC
+messages to its stdin and reads responses from stdout. It **cannot be curled**
+directly. This step only verifies that it starts cleanly and connects to the
+SPARQL endpoint.
+
+Open a new terminal (keep the `ontobi serve` terminal from step 2 running).
+
+**Git Bash / WSL:**
 
 ```bash
 ONTOBI_VAULT_PATH="<vault>" node packages/mcp/dist/index.js
 ```
 
-The server communicates over **stdio** — designed to be launched as a subprocess
-by an MCP host (Claude Code, Claude Desktop). It cannot be curled directly.
+**PowerShell:**
 
-**Expected stderr on startup:**
+```powershell
+$env:ONTOBI_VAULT_PATH = "<vault>"
+node packages/mcp/dist/index.js
+```
+
+**Expected output on stderr:**
 
 ```
 [ontobi-mcp] Connecting to SPARQL endpoint: http://localhost:14321
@@ -253,7 +286,23 @@ by an MCP host (Claude Code, Claude Desktop). It cannot be curled directly.
 [ontobi-mcp] Transport: stdio
 ```
 
-Kill with `Ctrl+C`. Three lines without an error means the MCP server is functional.
+The server then blocks, waiting for JSON-RPC input on stdin. Kill with `Ctrl+C`.
+
+Three lines printed without an error means:
+
+- The process started correctly
+- `ONTOBI_VAULT_PATH` was read from the environment
+- The stdio transport initialised (it does **not** verify the SPARQL connection at startup — that happens on the first tool call)
+
+### 4.3 Verify tool calls via Claude Code
+
+Wire the MCP server to Claude Code by adding it to your MCP config, then prompt:
+
+| Tool                   | Example prompt                                                | What to check                                                      |
+| ---------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `search_concepts`      | "Use search_concepts to find concepts about clustering"       | Returns labels + definitions only — no `.md` body text             |
+| `expand_concept_graph` | "Use expand_concept_graph with concept_id='concept-centroid'" | Returns nodes + edges; default depth=1 (immediate neighbours only) |
+| `get_concept_content`  | "Use get_concept_content with concept_id='concept-centroid'"  | Returns full `Centroid.md` body including math and code blocks     |
 
 ---
 
