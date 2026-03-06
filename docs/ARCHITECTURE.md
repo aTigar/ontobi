@@ -85,28 +85,28 @@ flowchart TB
 
 Standalone Rust binary. No Node.js or Obsidian dependency.
 
-| Module | Responsibility |
-|---|---|
-| **parser** (`parser/wikilink.rs`, `parser/frontmatter.rs`) | `serde_yaml` frontmatter extraction; wikilink resolver; date normaliser; produces `ConceptMetadata` |
-| **triples** (`triples/mod.rs`) | Converts `ConceptMetadata` to N-Quads strings; places each concept in its own named graph (`file:///...`) for incremental invalidation |
-| **store** (`store/mod.rs`) | `OntobiStore` wrapping `oxigraph::store::Store` (in-memory, no RocksDB); N-Quads persistence to `.ontobi/store.nq`; union-graph SPARQL |
-| **endpoint** (`endpoint/mod.rs`) | axum HTTP server on `localhost:14321`; `GET /sparql?query=` and `POST /sparql`; returns `application/sparql-results+json` |
-| **watcher** (`watcher/mod.rs`) | `notify-debouncer-mini` recursive vault watcher; debounced 500 ms; calls `store.reindex_file()` / `store.remove_file()` |
-| **CLI** (`main.rs`) | `ontobi serve --vault <path> [--index]` and `ontobi index`; graceful SIGINT shutdown with N-Quads persistence |
+| Module                                                     | Responsibility                                                                                                                         |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **parser** (`parser/wikilink.rs`, `parser/frontmatter.rs`) | `serde_yaml` frontmatter extraction; wikilink resolver; date normaliser; produces `ConceptMetadata`                                    |
+| **triples** (`triples/mod.rs`)                             | Converts `ConceptMetadata` to N-Quads strings; places each concept in its own named graph (`file:///...`) for incremental invalidation |
+| **store** (`store/mod.rs`)                                 | `OntobiStore` wrapping `oxigraph::store::Store` (in-memory, no RocksDB); N-Quads persistence to `.ontobi/store.nq`; union-graph SPARQL |
+| **endpoint** (`endpoint/mod.rs`)                           | axum HTTP server on `localhost:14321`; `GET /sparql?query=` and `POST /sparql`; returns `application/sparql-results+json`              |
+| **watcher** (`watcher/mod.rs`)                             | `notify-debouncer-mini` recursive vault watcher; debounced 500 ms; calls `store.reindex_file()` / `store.remove_file()`                |
+| **CLI** (`main.rs`)                                        | `ontobi serve --vault <path> [--index]` and `ontobi index`; graceful SIGINT shutdown with N-Quads persistence                          |
 
 ### `@ontobi/mcp` — MCP Server
 
 Separate process. Queries `ontobi-core`'s SPARQL endpoint on demand. No local graph, no Obsidian dependency.
 
-| Tool | Input | Action | Returns |
-|---|---|---|---|
-| `search_concepts` | `query: string, limit?: number` | SPARQL `REGEX` over labels + definitions | Concept list with metadata — no document bodies |
-| `expand_concept_graph` | `concept_id: string, depth?: number` | SPARQL property path `(skos:broader\|skos:narrower\|skos:related){1,N}` | Neighbourhood graph (nodes + edges) — no document bodies |
-| `get_concept_content` | `concept_id: string` | Named graph URI → `fs.readFile` | Full `.md` body |
+| Tool                   | Input                                | Action                                                                                                                                                           | Returns                                                  |
+| ---------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `search_concepts`      | `query: string, limit?: number`      | SPARQL `REGEX` over labels + definitions                                                                                                                         | Concept list with metadata — no document bodies          |
+| `expand_concept_graph` | `concept_id: string, depth?: number` | SPARQL `UNION` of explicit 1..depth hop chains over `skos:broader\|narrower\|related`; default depth 1 — agent calls the tool multiple times for wider traversal | Neighbourhood graph (nodes + edges) — no document bodies |
+| `get_concept_content`  | `concept_id: string`                 | Named graph URI → `fs.readFile`                                                                                                                                  | Full `.md` body                                          |
 
 Config via environment: `ONTOBI_SPARQL_ENDPOINT` (default `http://localhost:14321`), `ONTOBI_VAULT_PATH` (required).
 
-### `@ontobi/obsidian` — Obsidian Plugin *(post-MVP)*
+### `@ontobi/obsidian` — Obsidian Plugin _(post-MVP)_
 
 Thin UI wrapper. Communicates with `ontobi-core` via HTTP. No direct import of the Rust binary.
 
@@ -120,19 +120,19 @@ Thin UI wrapper. Communicates with `ontobi-core` via HTTP. No direct import of t
 
 ## Design Decisions
 
-| Decision | Choice | Rejected | Rationale |
-|---|---|---|---|
-| **Graph standard** | RDF — triples + named graphs | LPG (Graphology, NetworkX) | SKOS and Schema.org are native RDF vocabularies; one graph, no schema mapping |
-| **Core implementation** | Rust native binary (`ontobi-core`) | TypeScript + Oxigraph WASM | Eliminates WASM overhead; native Oxigraph crate has full API parity; no `dlltool`/MSVC on Windows required when using `default-features = false` (no RocksDB) |
-| **Triplestore** | Oxigraph 0.4 crate (native Rust, in-memory) | Oxigraph WASM npm, RocksDB | Single crate; SPARQL 1.1 property paths; avoids Electron WASM compilation quirks |
-| **Query language** | SPARQL 1.1 with `set_default_graph_as_union()` | Custom BFS/DFS | All data lives in named graphs (one per file); union-default-graph mode makes plain `SELECT` queries transparent to callers |
-| **Persistence** | Manual N-Quads dump/restore | RocksDB | `default-features = false` disables RocksDB; N-Quads round-trip is sufficient for vault sizes |
-| **Cross-process bridge** | localhost SPARQL HTTP (identical wire format) | `graph.json` file export | `@ontobi/mcp`'s `SparqlClient` requires zero changes; endpoint POST body = raw SPARQL string |
-| **MCP server language** | TypeScript (unchanged) | Rust | `@ontobi/mcp` stays TypeScript; Rust core is a separate process connected via HTTP, not an in-process dependency |
-| **Prefix expansion** | Custom `serde_yaml` deserialization + URI constants | `jsonld` crate | Fixed vocabulary (SKOS + Schema.org); ~50 LOC; avoids a heavy dependency |
-| **Visualisation** | Cytoscape.js in `@ontobi/obsidian` | Cytoscape.js in core | Core must be headless-safe (no DOM) |
-| **File watching** | `notify-debouncer-mini` inside the Rust binary | `chokidar` (Node.js) | Rust-native; no Node.js process required alongside the binary |
-| **Content retrieval** | `fs.readFile(vaultPath + relPath)` in `@ontobi/mcp` | Obsidian `vault.read()` | `.md` files are plain files; concept path encoded in named graph URI |
+| Decision                 | Choice                                              | Rejected                   | Rationale                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Graph standard**       | RDF — triples + named graphs                        | LPG (Graphology, NetworkX) | SKOS and Schema.org are native RDF vocabularies; one graph, no schema mapping                                                                                 |
+| **Core implementation**  | Rust native binary (`ontobi-core`)                  | TypeScript + Oxigraph WASM | Eliminates WASM overhead; native Oxigraph crate has full API parity; no `dlltool`/MSVC on Windows required when using `default-features = false` (no RocksDB) |
+| **Triplestore**          | Oxigraph 0.4 crate (native Rust, in-memory)         | Oxigraph WASM npm, RocksDB | Single crate; SPARQL 1.1 property paths; avoids Electron WASM compilation quirks                                                                              |
+| **Query language**       | SPARQL 1.1 with `set_default_graph_as_union()`      | Custom BFS/DFS             | All data lives in named graphs (one per file); union-default-graph mode makes plain `SELECT` queries transparent to callers                                   |
+| **Persistence**          | Manual N-Quads dump/restore                         | RocksDB                    | `default-features = false` disables RocksDB; N-Quads round-trip is sufficient for vault sizes                                                                 |
+| **Cross-process bridge** | localhost SPARQL HTTP (identical wire format)       | `graph.json` file export   | `@ontobi/mcp`'s `SparqlClient` requires zero changes; endpoint POST body = raw SPARQL string                                                                  |
+| **MCP server language**  | TypeScript (unchanged)                              | Rust                       | `@ontobi/mcp` stays TypeScript; Rust core is a separate process connected via HTTP, not an in-process dependency                                              |
+| **Prefix expansion**     | Custom `serde_yaml` deserialization + URI constants | `jsonld` crate             | Fixed vocabulary (SKOS + Schema.org); ~50 LOC; avoids a heavy dependency                                                                                      |
+| **Visualisation**        | Cytoscape.js in `@ontobi/obsidian`                  | Cytoscape.js in core       | Core must be headless-safe (no DOM)                                                                                                                           |
+| **File watching**        | `notify-debouncer-mini` inside the Rust binary      | `chokidar` (Node.js)       | Rust-native; no Node.js process required alongside the binary                                                                                                 |
+| **Content retrieval**    | `fs.readFile(vaultPath + relPath)` in `@ontobi/mcp` | Obsidian `vault.read()`    | `.md` files are plain files; concept path encoded in named graph URI                                                                                          |
 
 ---
 

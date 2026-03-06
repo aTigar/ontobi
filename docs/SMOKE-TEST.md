@@ -255,11 +255,6 @@ by an MCP host (Claude Code, Claude Desktop). It cannot be curled directly.
 
 Kill with `Ctrl+C`. Three lines without an error means the MCP server is functional.
 
-> [!WARNING]
-> `expand_concept_graph` with `depth` ≥ 2 (the default) generates `{1,N}` SPARQL
-> property path syntax that Oxigraph does not support — the tool returns a 400
-> error. Use `depth=1` explicitly until this is fixed.
-
 ---
 
 ## 5. Persistence
@@ -308,7 +303,6 @@ Run the COUNT query from step 3.3 again — the result must match.
 
 ## Known issues
 
-| Issue                            | Symptom                                                         | Status         |
-| -------------------------------- | --------------------------------------------------------------- | -------------- |
-| `expand_concept_graph` depth ≥ 2 | SPARQL 400 — `{1,N}` not supported by Oxigraph                  | Fix pending    |
-| `QUERIES.md` missing             | Issue #10 references 17 benchmark queries that do not exist yet | Needs creation |
+| Issue                                                                                  | Status         |
+| -------------------------------------------------------------------------------------- | -------------- |
+| `QUERIES.md` missing — issue #10 references 17 benchmark queries that do not exist yet | Needs creation |
