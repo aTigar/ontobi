@@ -72,11 +72,11 @@ Standalone Rust binary. No Node.js or Obsidian dependency.
 
 Separate process. Queries `ontobi-core`'s SPARQL endpoint on demand. No local graph, no Obsidian dependency.
 
-| Tool                   | Input                                | Action                                                                  | Returns                                                  |
-| ---------------------- | ------------------------------------ | ----------------------------------------------------------------------- | -------------------------------------------------------- |
-| `search_concepts`      | `query: string, limit?: number`      | SPARQL `REGEX` over labels + definitions                                | Concept list with metadata — no document bodies          |
-| `expand_concept_graph` | `concept_id: string, depth?: number` | SPARQL property path `(skos:broader\|skos:narrower\|skos:related){1,N}` | Neighbourhood graph (nodes + edges) — no document bodies |
-| `get_concept_content`  | `concept_id: string`                 | Named graph URI → `fs.readFile`                                         | Full `.md` body                                          |
+| Tool                   | Input                                | Action                                                                                                                                                           | Returns                                                  |
+| ---------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `search_concepts`      | `query: string, limit?: number`      | SPARQL `REGEX` over labels + definitions                                                                                                                         | Concept list with metadata — no document bodies          |
+| `expand_concept_graph` | `concept_id: string, depth?: number` | SPARQL `UNION` of explicit 1..depth hop chains over `skos:broader\|narrower\|related`; default depth 1 — agent calls the tool multiple times for wider traversal | Neighbourhood graph (nodes + edges) — no document bodies |
+| `get_concept_content`  | `concept_id: string`                 | Named graph URI → `fs.readFile`                                                                                                                                  | Full `.md` body                                          |
 
 Config via environment: `ONTOBI_SPARQL_ENDPOINT` (default `http://localhost:14321`), `ONTOBI_VAULT_PATH` (required).
 

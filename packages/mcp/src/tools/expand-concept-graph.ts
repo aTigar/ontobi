@@ -12,8 +12,12 @@ export const expandConceptGraphInput = z.object({
     .int()
     .min(1)
     .max(5)
-    .default(2)
-    .describe('Traversal depth in hops (1–5, default 2)'),
+    .default(1)
+    .describe(
+      'Traversal depth in hops (1–5, default 1). ' +
+        'Depth 1 returns immediate neighbours only. ' +
+        'For wider exploration call this tool multiple times from different starting concepts.',
+    ),
 })
 
 export type ExpandConceptGraphInput = z.infer<typeof expandConceptGraphInput>
@@ -37,36 +41,55 @@ export interface ConceptGraph {
   edges: GraphEdge[]
 }
 
+// Reason: Oxigraph does not support SPARQL 1.1 {n,m} property path repetition.
+// Build explicit UNION chains instead. Depth 1 is the recommended default —
+// the agent can call this tool multiple times to traverse wider neighbourhoods.
+const REL = '(skos:broader|skos:narrower|skos:related)'
+
+/** Returns UNION of 1..depth single-hop chains for node discovery. */
+function nodePathUnion(subjectUri: string, depth: number): string {
+  return Array.from(
+    { length: depth },
+    (_, i) =>
+      `  { <${subjectUri}> ${Array(i + 1)
+        .fill(REL)
+        .join('/')} ?node . }`,
+  ).join('\n  UNION\n')
+}
+
+/** Returns UNION of the center + 0..depth-1 hop chains for edge source discovery. */
+function intermediateUnion(subjectUri: string, depth: number): string {
+  const branches = [`  { BIND(<${subjectUri}> AS ?intermediate) }`]
+  for (let i = 1; i < depth; i++) {
+    branches.push(`  { <${subjectUri}> ${Array(i).fill(REL).join('/')} ?intermediate . }`)
+  }
+  return branches.join('\n  UNION\n')
+}
+
 /**
  * expand_concept_graph tool handler.
  *
- * Traverses the SKOS hierarchy up to `depth` hops from the given concept
- * using SPARQL property paths. Returns node + edge metadata only —
- * no document bodies in the response.
+ * Traverses the SKOS hierarchy up to `depth` hops from the given concept.
+ * Returns node + edge metadata only — no document bodies.
  *
- * The agent uses this output to decide which concepts are relevant, then
- * calls get_concept_content selectively to load only the needed bodies.
+ * Default depth is 1 (immediate neighbours). The agent can call this tool
+ * multiple times from different starting concepts to explore wider neighbourhoods
+ * without loading large subgraphs into the context window in one shot.
  */
 export async function expandConceptGraph(
   input: ExpandConceptGraphInput,
   sparql: SparqlClient,
 ): Promise<ConceptGraph> {
   const subjectUri = `urn:ontobi:concept:${input.concept_id}`
-  const pathExpr =
-    input.depth > 1
-      ? `(skos:broader|skos:narrower|skos:related){1,${input.depth}}`
-      : '(skos:broader|skos:narrower|skos:related)'
 
   const nodeSparql = `
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
     PREFIX schema: <https://schema.org/>
 
     SELECT DISTINCT ?node ?label ?identifier ?definition WHERE {
-      {
-        <${subjectUri}> ${pathExpr} ?node .
-      } UNION {
-        BIND(<${subjectUri}> AS ?node)
-      }
+      ${nodePathUnion(subjectUri, input.depth)}
+      UNION
+      { BIND(<${subjectUri}> AS ?node) }
       ?node schema:identifier ?identifier .
       ?node skos:prefLabel ?label .
       OPTIONAL { ?node skos:definition ?definition . }
@@ -79,9 +102,7 @@ export async function expandConceptGraph(
 
     SELECT DISTINCT ?sourceId ?targetId ?relation WHERE {
       {
-        <${subjectUri}> (skos:broader|skos:narrower|skos:related){0,${input.depth}} ?intermediate .
-      } UNION {
-        BIND(<${subjectUri}> AS ?intermediate)
+${intermediateUnion(subjectUri, input.depth)}
       }
       VALUES ?pred { skos:broader skos:narrower skos:related }
       ?intermediate ?pred ?neighbour .
