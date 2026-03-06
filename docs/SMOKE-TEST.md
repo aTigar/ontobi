@@ -3,7 +3,6 @@
 Validates the full pipeline on the live vault:
 `.md files → ontobi-core (SPARQL) → @ontobi/mcp (MCP tools)`
 
-**Vault:** `C:\Users\Tim\Documents\academic`  
 **Endpoint:** `http://127.0.0.1:14321/sparql`
 
 ---
@@ -12,40 +11,34 @@ Validates the full pipeline on the live vault:
 
 - MSYS2 installed at `C:\msys64`
 - Node.js ≥ 20 and pnpm installed
-- WSL2 with mirrored networking (see note below)
-
-> **WSL networking:** The server binds to `127.0.0.1`. For WSL2 to reach it,
-> `networkingMode=mirrored` must be set in `C:\Users\Tim\.wslconfig`.
-> After setting it, run `wsl --shutdown` in PowerShell once, then reopen WSL.
-> `127.0.0.1` then refers to the same loopback as Windows.
+- WSL2 with mirrored networking (see step 3)
 
 ---
 
 ## 1. Build the binary
 
+> [!WARNING] Windows PATH requirement
+> `cargo` on this project uses the MSYS2 GNU linker. Without it the build fails
+> with `dlltool.exe: program not found`. Set the PATH before calling `cargo` —
+> either per-command in Git Bash or once per session in PowerShell.
+
 **Git Bash:**
 
 ```bash
-cd C:/Users/Tim/Documents/academic/projects/ontobi
-PATH="/c/msys64/mingw64/bin:/c/Users/Tim/.cargo/bin:$PATH" cargo build --release
+PATH="/c/msys64/mingw64/bin:$HOME/.cargo/bin:$PATH" cargo build --release
 ```
 
 **PowerShell:**
 
 ```powershell
-cd C:\Users\Tim\Documents\academic\projects\ontobi
 $env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH
 cargo build --release
 ```
 
-Cargo compiles all crates in the workspace. First run takes ~60–90 s (downloading
-and compiling dependencies). Subsequent runs are incremental and take a few seconds.
+First run takes ~60–90 s (Cargo downloads and compiles all dependencies).
+Subsequent runs are incremental and take a few seconds.
 
-The binary lands at:
-
-```
-target\release\ontobi.exe
-```
+The binary lands at `target\release\ontobi.exe` (workspace root).
 
 ---
 
@@ -56,22 +49,20 @@ Open a dedicated terminal — this command blocks. Keep it running for all steps
 **Git Bash:**
 
 ```bash
-./target/release/ontobi serve \
-  --vault "C:/Users/Tim/Documents/academic" \
-  --index
+./target/release/ontobi serve --vault "<vault>" --index
 ```
 
 **PowerShell:**
 
 ```powershell
-.\target\release\ontobi.exe serve `
-  --vault "C:\Users\Tim\Documents\academic" `
-  --index
+.\target\release\ontobi.exe serve --vault "<vault>" --index
 ```
 
-`--index` tells the server to read every `.md` file in the vault on startup,
-extract SKOS frontmatter, and load the resulting RDF triples into the in-memory
-store. Files without `skos:prefLabel` are silently skipped.
+Replace `<vault>` with the absolute path to your Obsidian vault root.
+
+`--index` scans every `.md` file on startup, extracts SKOS frontmatter, and loads
+the resulting RDF triples into the in-memory store. Files without `skos:prefLabel`
+are silently skipped.
 
 **Expected log output:**
 
@@ -82,14 +73,27 @@ INFO ontobi_core::watcher: ontobi serving port=14321 vault=...
 
 The server is ready once you see the second line.
 
-> **Second run:** the store is persisted to `<vault>/.ontobi/store.nq` on
-> shutdown. Omit `--index` to restore from that file instead of re-scanning.
+> [!NOTE]
+> On subsequent runs the store can be restored from `<vault>/.ontobi/store.nq`
+> (written on shutdown). Omit `--index` to skip re-scanning the vault.
 
 ---
 
 ## 3. SPARQL validation (WSL terminal)
 
-Define a helper so you don't repeat the curl flags every time:
+> [!NOTE] WSL2 networking
+> The server binds to `127.0.0.1`. WSL2 can only reach it when mirrored
+> networking is enabled. Add this to `%USERPROFILE%\.wslconfig`:
+>
+> ```ini
+> [wsl2]
+> networkingMode=mirrored
+> ```
+>
+> Then run `wsl --shutdown` in PowerShell once and reopen WSL.
+> Afterwards `127.0.0.1` in WSL refers to the same loopback as Windows.
+
+Define a helper so you don't repeat the curl flags for every query:
 
 ```bash
 sparql() {
@@ -102,9 +106,8 @@ sparql() {
 }
 ```
 
-`-s` suppresses the progress bar. `-X POST` sends the SPARQL string as the
-request body, avoiding URL encoding. `python3 -m json.tool` pretty-prints the
-response.
+`-s` suppresses the progress bar. `-X POST` sends the SPARQL string as the request
+body, avoiding URL encoding. `python3 -m json.tool` pretty-prints the response.
 
 ---
 
@@ -117,7 +120,7 @@ curl -s http://127.0.0.1:14321/sparql
 **Expected:** `Missing SPARQL query parameter`
 
 A 400 response confirms the server is reachable. `Connection refused` means the
-server is not running or WSL mirrored networking is not active.
+server is not running or mirrored networking is not active.
 
 ---
 
@@ -138,7 +141,7 @@ predicate and object, so this passes as long as any triple for this subject exis
 }
 ```
 
-`false` means `Centroid.md` was not indexed. Check that its frontmatter contains
+`false` means `Centroid.md` was not indexed — check that its frontmatter contains
 `identifier: concept-centroid`.
 
 ---
@@ -153,10 +156,10 @@ sparql "
 "
 ```
 
-Counts distinct subjects that have a `skos:prefLabel` triple. Only SKOS concept
-files produce this triple, so non-concept `.md` files are excluded from the count.
+Counts distinct subjects with a `skos:prefLabel` triple. Non-concept `.md` files
+are excluded because they produce no such triple.
 
-**Expected:** `"value": "91"` (or the current file count in `_concepts/`)
+**Expected:** an integer matching the number of SKOS files in the vault.
 
 ---
 
@@ -173,10 +176,10 @@ sparql "
 "
 ```
 
-The `;` is SPARQL shorthand for "same subject, next predicate". This returns the
-label and definition stored as RDF literals.
+The `;` is SPARQL shorthand for "same subject, next predicate". Returns the label
+and definition stored as RDF literals.
 
-**Expected:**
+**Expected values must match `_concepts/Centroid.md` frontmatter:**
 
 ```json
 {
@@ -190,9 +193,6 @@ label and definition stored as RDF literals.
   }
 }
 ```
-
-Values must match the `skos:prefLabel` and `skos:definition` fields in
-`_concepts/Centroid.md`.
 
 ---
 
@@ -214,7 +214,7 @@ sparql "
 
 `VALUES` restricts `?pred` to the three SKOS relation types. `BIND + REPLACE`
 strips the namespace from the predicate URI, leaving just `broader`, `narrower`,
-or `related` as a readable label.
+or `related`.
 
 **Expected rows** (from `Centroid.md` frontmatter):
 
@@ -230,37 +230,35 @@ converted to `concept-k-means-clustering` at index time.
 
 ## 4. MCP server
 
-Build the TypeScript packages (skip if already built):
+Build the TypeScript packages if not already done:
 
 ```bash
 pnpm build
 ```
 
-Start the MCP server in a second terminal:
+Start the MCP server in a new terminal:
 
 ```bash
-ONTOBI_VAULT_PATH="C:/Users/Tim/Documents/academic" \
-  node packages/mcp/dist/index.js
+ONTOBI_VAULT_PATH="<vault>" node packages/mcp/dist/index.js
 ```
 
-The server communicates over **stdio** — it is designed to be launched as a
-subprocess by an MCP host (Claude Code, Claude Desktop). It cannot be curled
-directly.
+The server communicates over **stdio** — designed to be launched as a subprocess
+by an MCP host (Claude Code, Claude Desktop). It cannot be curled directly.
 
 **Expected stderr on startup:**
 
 ```
 [ontobi-mcp] Connecting to SPARQL endpoint: http://localhost:14321
-[ontobi-mcp] Vault path: C:/Users/Tim/Documents/academic
+[ontobi-mcp] Vault path: <vault>
 [ontobi-mcp] Transport: stdio
 ```
 
-Kill with `Ctrl+C`. If these three lines appear without an error, the MCP server
-is functional.
+Kill with `Ctrl+C`. Three lines without an error means the MCP server is functional.
 
-> **Known issue:** `expand_concept_graph` with `depth` ≥ 2 (the default) sends
-> a SPARQL property path using `{1,N}` repeat syntax that Oxigraph does not
-> support. Use `depth=1` explicitly until this is fixed.
+> [!WARNING]
+> `expand_concept_graph` with `depth` ≥ 2 (the default) generates `{1,N}` SPARQL
+> property path syntax that Oxigraph does not support — the tool returns a 400
+> error. Use `depth=1` explicitly until this is fixed.
 
 ---
 
@@ -275,17 +273,16 @@ INFO ontobi_core::watcher: shutting down…
 INFO ontobi_core::watcher: store saved path=.../.ontobi/store.nq
 ```
 
-Verify the file was written:
+Verify the file was written (WSL — Windows drives are mounted under `/mnt/`):
 
 ```bash
-# WSL
-ls -lh "/mnt/c/Users/Tim/Documents/academic/.ontobi/store.nq"
+ls -lh /mnt/<drive>/<path-to-vault>/.ontobi/store.nq
 ```
 
 Restart without `--index` to confirm the store restores from disk:
 
 ```bash
-./target/release/ontobi serve --vault "C:/Users/Tim/Documents/academic"
+./target/release/ontobi serve --vault "<vault>"
 ```
 
 Run the COUNT query from step 3.3 again — the result must match.
