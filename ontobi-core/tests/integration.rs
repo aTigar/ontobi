@@ -212,7 +212,7 @@ async fn sparql_broader_relation_traversal_via_endpoint() {
     let app = app(store);
     let sparql = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         SELECT ?label WHERE {
-            <urn:ontobi:concept:concept-child> skos:broader ?n .
+            <urn:ontobi:item:concept-child> skos:broader ?n .
             ?n skos:prefLabel ?label .
         }";
     let (status, json) = post_sparql(&app, sparql).await;
@@ -238,13 +238,13 @@ async fn ask_query_via_endpoint() {
 
     let (s1, j1) = post_sparql(
         &app,
-        "ASK { <urn:ontobi:concept:concept-epsilon> ?p ?o }",
+        "ASK { <urn:ontobi:item:concept-epsilon> ?p ?o }",
     )
     .await;
     assert_eq!(s1, axum::http::StatusCode::OK);
     assert_eq!(j1["boolean"].as_bool().unwrap(), true);
 
-    let (s2, j2) = post_sparql(&app, "ASK { <urn:ontobi:concept:no-such> ?p ?o }").await;
+    let (s2, j2) = post_sparql(&app, "ASK { <urn:ontobi:item:no-such> ?p ?o }").await;
     assert_eq!(s2, axum::http::StatusCode::OK);
     assert_eq!(j2["boolean"].as_bool().unwrap(), false);
 }

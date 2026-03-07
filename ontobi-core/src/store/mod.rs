@@ -6,7 +6,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::parser::{parse_frontmatter, file_path_to_graph_uri};
+use crate::parser::{parse_file, file_path_to_graph_uri, ParserConfig};
 use crate::triples::generate_nquads;
 
 // ── OntobiStore ───────────────────────────────────────────────────────────────
@@ -14,22 +14,41 @@ use crate::triples::generate_nquads;
 /// Wrapper around `oxigraph::store::Store`.
 ///
 /// `Store` is internally `Arc`-backed: cloning gives a shared handle to the
-/// same in-memory graph (same as cloning an `Arc`). The watcher and endpoint
-/// can each hold a clone and see consistent data without an outer `Mutex`.
+/// same in-memory graph. The watcher and endpoint can each hold a clone and
+/// see consistent data without an outer `Mutex`.
 ///
 /// Persistence is N-Quads dump to `<vault>/.ontobi/store.nq` on shutdown and
-/// load on startup — identical behaviour to the TypeScript `OntobiStore`.
+/// load on startup.
 #[derive(Clone)]
 pub struct OntobiStore {
-    inner: Store,
+    inner:  Store,
+    config: ParserConfig,
 }
 
 impl OntobiStore {
-    /// Create a new, empty in-memory store.
-    pub fn new() -> Result<Self> {
+    /// Create a store with explicit parser configuration.
+    ///
+    /// Use this when the `--csl` flag is active or any other `ParserConfig`
+    /// option is non-default. For simple cases, prefer [`OntobiStore::new`].
+    pub fn with_config(config: ParserConfig) -> Result<Self> {
         Ok(Self {
-            inner: Store::new().context("failed to create Oxigraph store")?,
+            inner:  Store::new().context("failed to create Oxigraph store")?,
+            config,
         })
+    }
+
+    /// Create a new, empty in-memory store with default parser configuration.
+    ///
+    /// Shorthand for `OntobiStore::with_config(ParserConfig::default())`.
+    /// CSL indexing is disabled by default; pass an explicit config via
+    /// [`OntobiStore::with_config`] to enable it.
+    ///
+    /// Reason: the production binary always uses `with_config` (config comes
+    /// from the CLI), so `new()` is not reachable from `main()`. It is kept
+    /// as a convenience for unit tests and library consumers.
+    #[allow(dead_code)]
+    pub fn new() -> Result<Self> {
+        Self::with_config(ParserConfig::default())
     }
 
     /// Load N-Quads from `path` into the store (if the file exists).
@@ -44,7 +63,10 @@ impl OntobiStore {
             return Ok(());
         }
         self.inner
-            .load_from_reader(RdfParser::from_format(RdfFormat::NQuads), Cursor::new(nquads.as_bytes()))
+            .load_from_reader(
+                RdfParser::from_format(RdfFormat::NQuads),
+                Cursor::new(nquads.as_bytes()),
+            )
             .with_context(|| format!("loading N-Quads from {}", path.display()))?;
         Ok(())
     }
@@ -65,10 +87,10 @@ impl OntobiStore {
         Ok(())
     }
 
-    /// Parse `file_path` and (re)load its concept into the store.
+    /// Parse `file_path` and (re)load its item into the store.
     ///
     /// - Clears the existing named graph for this file first (incremental invalidation).
-    /// - Silently skips non-SKOS files (no `skos:prefLabel`).
+    /// - Silently skips non-indexable files (no recognised frontmatter signal).
     /// - `vault_path` is the vault root; `file_path` must be inside it.
     pub fn reindex_file(&self, vault_path: &Path, file_path: &Path) -> Result<()> {
         let content = std::fs::read_to_string(file_path)
@@ -76,36 +98,48 @@ impl OntobiStore {
 
         let rel_path = file_path
             .strip_prefix(vault_path)
-            .with_context(|| format!("{} is not inside vault {}", file_path.display(), vault_path.display()))?
+            .with_context(|| {
+                format!(
+                    "{} is not inside vault {}",
+                    file_path.display(),
+                    vault_path.display()
+                )
+            })?
             .to_str()
             .context("non-UTF8 path")?
             .replace('\\', "/");
 
-        let concept = match parse_frontmatter(&content, &rel_path) {
-            Some(c) => c,
-            None => return Ok(()), // not a SKOS concept file — skip silently
+        let item = match parse_file(&content, &rel_path, &self.config) {
+            Some(i) => i,
+            None => return Ok(()), // not an indexable file — skip silently
         };
 
-        let graph_uri = file_path_to_graph_uri(&rel_path);
+        // Reason: item.file_path == rel_path (parse_file stores it verbatim),
+        // but using item.file_path here ensures the value is read and avoids
+        // the dead_code lint on ParsedItem::file_path.
+        let graph_uri = file_path_to_graph_uri(&item.file_path);
 
-        // Drop previous version of this concept
+        // Drop previous version of this item's graph
         self.inner
             .update(&format!("DROP SILENT GRAPH <{graph_uri}>"))
             .with_context(|| format!("clearing graph <{graph_uri}>"))?;
 
         // Insert fresh N-Quads
-        let nquads = generate_nquads(&concept, &graph_uri);
+        let nquads = generate_nquads(&item, &graph_uri);
         if !nquads.trim().is_empty() {
             self.inner
-                .load_from_reader(RdfParser::from_format(RdfFormat::NQuads), Cursor::new(nquads.as_bytes()))
-                .with_context(|| format!("loading triples for {rel_path}"))?;
+                .load_from_reader(
+                    RdfParser::from_format(RdfFormat::NQuads),
+                    Cursor::new(nquads.as_bytes()),
+                )
+                .with_context(|| format!("loading triples for {}", item.file_path))?;
         }
 
-        tracing::debug!("indexed {rel_path} ({id})", id = concept.identifier);
+        tracing::debug!("indexed {} ({})", item.file_path, item.identifier);
         Ok(())
     }
 
-    /// Remove a concept from the store (called on file delete).
+    /// Remove an item from the store (called on file delete).
     pub fn remove_file(&self, vault_path: &Path, file_path: &Path) -> Result<()> {
         let rel_path = rel_path(vault_path, file_path)?;
         let graph_uri = file_path_to_graph_uri(&rel_path);
@@ -116,9 +150,10 @@ impl OntobiStore {
         Ok(())
     }
 
-    /// Recursively scan `vault_path` for `.md` files and index all SKOS concepts.
-    /// Returns the number of files processed (not the number of concepts indexed,
-    /// since non-SKOS files are skipped silently).
+    /// Recursively scan `vault_path` for `.md` files and index all indexable items.
+    ///
+    /// Returns the number of files processed (not the number of items indexed,
+    /// since non-indexable files are skipped silently).
     pub fn index_vault(&self, vault_path: &Path) -> Result<usize> {
         let mut processed = 0usize;
         for entry in WalkDir::new(vault_path)
@@ -136,12 +171,9 @@ impl OntobiStore {
 
     /// Execute a SPARQL SELECT or ASK query and return the result as SPARQL JSON bytes.
     ///
-    /// The SPARQL JSON format covers both SELECT (bindings) and ASK (boolean).
-    ///
-    /// Queries run over the **union of all named graphs** (equivalent to the
-    /// Oxigraph JS WASM default). Without this, a plain `SELECT ?s ?p ?o WHERE
-    /// { ?s ?p ?o }` returns nothing because all our data lives in named graphs
-    /// (one per concept file) — the default graph is empty.
+    /// Queries run over the **union of all named graphs** (one graph per vault
+    /// file). Without this, plain `SELECT` queries return nothing because the
+    /// default graph is always empty — all data lives in named graphs.
     pub fn query_json(&self, sparql: &str) -> Result<Vec<u8>> {
         let mut query = Query::parse(sparql, None).context("SPARQL parse")?;
         query.dataset_mut().set_default_graph_as_union();
@@ -171,7 +203,6 @@ impl OntobiStore {
     }
 
     /// Returns `true` if the query is a CONSTRUCT or DESCRIBE (not supported for JSON output).
-    /// The endpoint uses this to gate the Turtle path.
     pub fn is_graph_query(sparql: &str) -> bool {
         let upper = sparql.trim_start().to_ascii_uppercase();
         upper.starts_with("CONSTRUCT") || upper.starts_with("DESCRIBE")
@@ -186,9 +217,9 @@ pub fn default_persistence_path(vault_path: &Path) -> PathBuf {
 }
 
 /// `ontobi index` command: index vault, dump, exit.
-pub async fn index_vault_and_exit(vault: &str) -> Result<()> {
+pub async fn index_vault_and_exit(vault: &str, config: ParserConfig) -> Result<()> {
     let vault_path = Path::new(vault);
-    let store = OntobiStore::new()?;
+    let store = OntobiStore::with_config(config)?;
     let persist_path = default_persistence_path(vault_path);
 
     store.load_from_file(&persist_path)?;
@@ -247,9 +278,13 @@ mod tests {
         path
     }
 
-    /// `broader_label` is the human label of the broader concept (e.g. "Parent"),
-    /// stored as a wikilink so the parser resolves it via `label_to_identifier`.
-    fn write_concept_with_broader(vault: &Path, name: &str, id: &str, broader_label: &str) -> PathBuf {
+    /// Write a concept with a broader relation (wikilink format).
+    fn write_concept_with_broader(
+        vault: &Path,
+        name: &str,
+        id: &str,
+        broader_label: &str,
+    ) -> PathBuf {
         let dir = vault.join("_concepts");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{name}.md"));
@@ -296,7 +331,8 @@ mod tests {
         let results = store.query_json(SELECT_LABELS).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&results).unwrap();
         let labels: Vec<&str> = json["results"]["bindings"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|b| b["label"]["value"].as_str().unwrap())
             .collect();
@@ -320,16 +356,23 @@ mod tests {
         let results = store.query_json(SELECT_LABELS).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&results).unwrap();
         let labels: Vec<&str> = json["results"]["bindings"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|b| b["label"]["value"].as_str().unwrap())
             .collect();
-        assert!(labels.contains(&"Beta Updated"), "expected Beta Updated in {labels:?}");
-        assert!(!labels.contains(&"Beta"), "old label Beta must be gone in {labels:?}");
+        assert!(
+            labels.contains(&"Beta Updated"),
+            "expected Beta Updated in {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Beta"),
+            "old label Beta must be gone in {labels:?}"
+        );
     }
 
     #[test]
-    fn reindex_file_skips_non_skos_silently() {
+    fn reindex_file_skips_non_indexable_silently() {
         let vault = temp_vault();
         let store = OntobiStore::new().unwrap();
         let path = write_plain(vault.path(), "readme");
@@ -354,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn index_vault_ingests_all_skos_files() {
+    fn index_vault_ingests_all_indexable_files() {
         let vault = temp_vault();
         let store = OntobiStore::new().unwrap();
         write_concept(vault.path(), "Alpha", "concept-alpha");
@@ -366,7 +409,8 @@ mod tests {
         let results = store.query_json(SELECT_LABELS).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&results).unwrap();
         let labels: Vec<&str> = json["results"]["bindings"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|b| b["label"]["value"].as_str().unwrap())
             .collect();
@@ -386,14 +430,14 @@ mod tests {
 
         assert!(persist_path.exists(), "persistence file must exist after dump");
 
-        // Load into a fresh store
         let store2 = OntobiStore::new().unwrap();
         store2.load_from_file(&persist_path).unwrap();
 
         let results = store2.query_json(SELECT_LABELS).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&results).unwrap();
         let labels: Vec<&str> = json["results"]["bindings"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|b| b["label"]["value"].as_str().unwrap())
             .collect();
@@ -408,12 +452,12 @@ mod tests {
         store.reindex_file(vault.path(), &path).unwrap();
 
         let is_true = store
-            .query_bool("ASK { <urn:ontobi:concept:concept-epsilon> ?p ?o }")
+            .query_bool("ASK { <urn:ontobi:item:concept-epsilon> ?p ?o }")
             .unwrap();
         assert!(is_true);
 
         let is_false = store
-            .query_bool("ASK { <urn:ontobi:concept:no-such> ?p ?o }")
+            .query_bool("ASK { <urn:ontobi:item:no-such> ?p ?o }")
             .unwrap();
         assert!(!is_false);
     }
@@ -423,12 +467,10 @@ mod tests {
         let vault = temp_vault();
         let store = OntobiStore::new().unwrap();
         write_concept(vault.path(), "Parent", "concept-parent");
-        // Pass the human label "Parent" — the parser will wikilink-resolve it to concept-parent
-        let child = write_concept_with_broader(vault.path(), "Child", "concept-child", "Parent");
+        let child =
+            write_concept_with_broader(vault.path(), "Child", "concept-child", "Parent");
         store.index_vault(vault.path()).unwrap();
-        let _ = child; // used above
-
-
+        let _ = child;
 
         // SPARQL 1.1 does not support `{n,m}` repetition in property paths.
         // Use a UNION of 1-hop and 2-hop patterns instead.
@@ -436,12 +478,12 @@ mod tests {
             PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
             SELECT DISTINCT ?label WHERE {
                 {
-                    <urn:ontobi:concept:concept-child>
+                    <urn:ontobi:item:concept-child>
                         (skos:broader|skos:narrower|skos:related) ?n .
                 }
                 UNION
                 {
-                    <urn:ontobi:concept:concept-child>
+                    <urn:ontobi:item:concept-child>
                         (skos:broader|skos:narrower|skos:related)/
                         (skos:broader|skos:narrower|skos:related) ?n .
                 }
@@ -451,10 +493,14 @@ mod tests {
         let results = store.query_json(sparql).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&results).unwrap();
         let labels: Vec<&str> = json["results"]["bindings"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|b| b["label"]["value"].as_str().unwrap())
             .collect();
-        assert!(labels.contains(&"Parent"), "property path must reach Parent from Child");
+        assert!(
+            labels.contains(&"Parent"),
+            "property path must reach Parent from Child"
+        );
     }
 }

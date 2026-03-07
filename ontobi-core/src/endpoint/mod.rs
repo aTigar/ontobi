@@ -240,7 +240,7 @@ mod tests {
 
         let (status, json) = post_sparql(
             &app,
-            "ASK { <urn:ontobi:concept:concept-alpha> ?p ?o }",
+            "ASK { <urn:ontobi:item:concept-alpha> ?p ?o }",
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -248,7 +248,7 @@ mod tests {
 
         let (status2, json2) = post_sparql(
             &app,
-            "ASK { <urn:ontobi:concept:no-such> ?p ?o }",
+            "ASK { <urn:ontobi:item:no-such> ?p ?o }",
         )
         .await;
         assert_eq!(status2, StatusCode::OK);

@@ -6,6 +6,7 @@ mod watcher;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use parser::ParserConfig;
 
 #[derive(Parser)]
 #[command(name = "ontobi", version, about = "SKOS knowledge graph server")]
@@ -29,6 +30,11 @@ enum Commands {
         /// Useful for fast restarts when the vault has not changed.
         #[arg(long, default_value_t = false)]
         no_index: bool,
+        /// Enable CSL/Zotero bibliography indexing.
+        /// When set, files containing a `citation-key` field are parsed as
+        /// bibliography entries and enriched with Schema.org triples.
+        #[arg(long, default_value_t = false)]
+        csl: bool,
     },
     /// Index a vault and exit (no server). Writes store.nq for fast cold starts.
     Index {
@@ -36,6 +42,9 @@ enum Commands {
         /// Falls back to the ONTOBI_VAULT_PATH environment variable if not set.
         #[arg(long)]
         vault: Option<String>,
+        /// Enable CSL/Zotero bibliography indexing.
+        #[arg(long, default_value_t = false)]
+        csl: bool,
     },
 }
 
@@ -52,13 +61,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Serve { vault, port, no_index } => {
+        Commands::Serve { vault, port, no_index, csl } => {
             let vault = resolve_vault(vault)?;
-            watcher::serve(vault, port, !no_index).await?;
+            let config = ParserConfig { csl_enabled: csl };
+            watcher::serve(vault, port, !no_index, config).await?;
         }
-        Commands::Index { vault } => {
+        Commands::Index { vault, csl } => {
             let vault = resolve_vault(vault)?;
-            store::index_vault_and_exit(&vault).await?;
+            let config = ParserConfig { csl_enabled: csl };
+            store::index_vault_and_exit(&vault, config).await?;
         }
     }
 
