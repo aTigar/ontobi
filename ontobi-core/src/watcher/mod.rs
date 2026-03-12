@@ -9,25 +9,27 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::endpoint;
+use crate::parser::ParserConfig;
 use crate::store::{OntobiStore, default_persistence_path};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// `ontobi serve` command:
 ///
-/// 1. Create an in-memory store and load N-Quads persistence (if it exists).
+/// 1. Create an in-memory store with the given `ParserConfig` and load N-Quads
+///    persistence (if it exists).
 /// 2. Optionally index the vault.
 /// 3. Spawn the SPARQL HTTP endpoint as a background tokio task.
 /// 4. Watch for `.md` file changes (debounced 500 ms).
 /// 5. On Ctrl+C: stop watching, dump the store, exit.
-pub async fn serve(vault: String, port: u16, index: bool) -> Result<()> {
+pub async fn serve(vault: String, port: u16, index: bool, config: ParserConfig) -> Result<()> {
     let vault_path = PathBuf::from(&vault);
     if !vault_path.exists() {
         anyhow::bail!("vault path does not exist: {}", vault_path.display());
     }
 
     // ── store ─────────────────────────────────────────────────────────────────
-    let store = OntobiStore::new().context("creating store")?;
+    let store = OntobiStore::with_config(config).context("creating store")?;
     let persist_path = default_persistence_path(&vault_path);
 
     store

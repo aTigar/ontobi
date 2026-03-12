@@ -27,6 +27,23 @@ pub fn resolve_wikilink(value: &str) -> &str {
     trimmed
 }
 
+/// Build the subject/object IRI for any indexable vault item.
+///
+/// All items use the `urn:ontobi:item:` prefix regardless of their RDF type.
+/// This replaces the old `urn:ontobi:concept:` prefix used by `ConceptMetadata`.
+///
+/// # Examples
+/// ```
+/// # use ontobi_core::parser::wikilink::identifier_to_item_iri;
+/// assert_eq!(
+///     identifier_to_item_iri("concept-centroid"),
+///     "urn:ontobi:item:concept-centroid"
+/// );
+/// ```
+pub fn identifier_to_item_iri(id: &str) -> String {
+    format!("urn:ontobi:item:{id}")
+}
+
 /// Convert a concept label to a stable `concept-<slug>` identifier.
 ///
 /// Matches the `identifier` field convention in the vault.
@@ -244,6 +261,14 @@ fn collapse_hyphens(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifier_to_item_iri_basic() {
+        assert_eq!(
+            identifier_to_item_iri("concept-centroid"),
+            "urn:ontobi:item:concept-centroid"
+        );
+    }
 
     #[test]
     fn resolve_plain() {
