@@ -63,7 +63,7 @@ export async function searchConcepts(
   const results: ConceptSummary[] = await Promise.all(
     rows.map(async (row) => {
       const identifier = row['identifier'] ?? ''
-      const subjectUri = `urn:ontobi:concept:${identifier}`
+      const subjectUri = `urn:ontobi:item:${identifier}`
 
       const relQuery = `
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>

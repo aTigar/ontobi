@@ -37,7 +37,7 @@ export async function getConceptContent(
   sparql: SparqlClient,
   vaultPath: string,
 ): Promise<ConceptContent> {
-  const subjectUri = `urn:ontobi:concept:${input.concept_id}`
+  const subjectUri = `urn:ontobi:item:${input.concept_id}`
 
   // Resolve the named graph URI — this encodes the file path
   const metaSparql = `

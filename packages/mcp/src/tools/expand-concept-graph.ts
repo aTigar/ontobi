@@ -80,7 +80,7 @@ export async function expandConceptGraph(
   input: ExpandConceptGraphInput,
   sparql: SparqlClient,
 ): Promise<ConceptGraph> {
-  const subjectUri = `urn:ontobi:concept:${input.concept_id}`
+  const subjectUri = `urn:ontobi:item:${input.concept_id}`
 
   const nodeSparql = `
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
