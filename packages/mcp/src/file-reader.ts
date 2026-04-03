@@ -36,8 +36,14 @@ export async function readConceptByPath(vaultPath: string, relPath: string): Pro
 
 /**
  * Convert a named graph URI to a relative file path.
- * 'file:///_concepts/Centroid.md' → '_concepts/Centroid.md'
+ * 'file:///_concepts/Centroid.md'          → '_concepts/Centroid.md'
+ * 'file:///_concepts/CIA%20Triad.md'        → '_concepts/CIA Triad.md'
+ * 'file:///_concepts/Activation%20Functions.md' → '_concepts/Activation Functions.md'
+ *
+ * The Rust backend (ontobi-core) percent-encodes spaces and special characters when
+ * constructing named graph URIs (file_path_to_graph_uri). This function reverses
+ * that encoding so Node's fs.readFile receives the literal filesystem path.
  */
 export function graphUriToRelPath(graphUri: string): string {
-  return graphUri.replace(/^file:\/\/\//, '')
+  return decodeURIComponent(graphUri.replace(/^file:\/\/\//, ''))
 }
