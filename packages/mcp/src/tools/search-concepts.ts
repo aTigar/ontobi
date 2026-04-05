@@ -69,7 +69,7 @@ export async function searchConcepts(
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         PREFIX schema: <https://schema.org/>
 
-        SELECT ?rel ?targetId WHERE {
+        SELECT DISTINCT ?rel ?targetId WHERE {
           VALUES ?pred { skos:broader skos:related }
           <${subjectUri}> ?pred ?target .
           ?target schema:identifier ?targetId .
@@ -77,9 +77,23 @@ export async function searchConcepts(
         }
       `
 
+      // Reason: each concept is stored in its own named graph and the default
+      // graph is the union of all named graphs, so the same (subject, predicate,
+      // object) triple can match once per graph it appears in. SPARQL DISTINCT
+      // handles this at the store level; the JS Set is a safety net against any
+      // remaining duplicates from sloppy SKOS authoring (same target appearing
+      // under multiple predicates, or duplicate triples across graphs).
       const relRows = await sparql.select(relQuery)
-      const broader = relRows.filter((r) => r['rel'] === 'broader').map((r) => r['targetId'] ?? '')
-      const related = relRows.filter((r) => r['rel'] === 'related').map((r) => r['targetId'] ?? '')
+      const broader = [
+        ...new Set(
+          relRows.filter((r) => r['rel'] === 'broader').map((r) => r['targetId'] ?? ''),
+        ),
+      ].filter((id) => id !== '')
+      const related = [
+        ...new Set(
+          relRows.filter((r) => r['rel'] === 'related').map((r) => r['targetId'] ?? ''),
+        ),
+      ].filter((id) => id !== '')
 
       return {
         identifier,
