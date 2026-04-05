@@ -23,11 +23,19 @@ const KNOWN_PREFIXES: &[(&str, &str)] = &[
 
 // ── YAML keys excluded from the triple bag ────────────────────────────────────
 
-/// Keys consumed as file-level metadata; not emitted as RDF predicates.
+/// Keys consumed as file-level metadata; not emitted as RDF predicates by the
+/// generic extraction loop.
 ///
 /// `@type` is handled by the detection phase and controls `item_type`.
-/// The others are Obsidian-specific organisational fields.
+/// `aliases` is handled by a dedicated pre-loop block that emits one
+/// `skos:altLabel` literal per entry (see [`parse_file`]); it must remain
+/// skipped here to avoid double-emission.
+/// `tags` is an Obsidian-specific organisational field with no RDF semantics.
 const SKIP_KEYS: &[&str] = &["@type", "aliases", "tags"];
+
+/// Full IRI of `skos:altLabel`, used for the Obsidian `aliases:` frontmatter
+/// key. Emitted as plain literals (never IRIs) regardless of value shape.
+const SKOS_ALT_LABEL: &str = "http://www.w3.org/2004/02/skos/core#altLabel";
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -90,6 +98,22 @@ pub fn parse_file(content: &str, rel_path: &str, config: &ParserConfig) -> Optio
     // ── Generic triple extraction ─────────────────────────────────────────────
 
     let mut triples: Vec<(String, RdfObject)> = Vec::new();
+
+    // ── Aliases → skos:altLabel ───────────────────────────────────────────────
+    //
+    // Emit one `skos:altLabel` literal triple per entry in the `aliases:`
+    // frontmatter list. This makes acronyms (GDPR, DAST, RBAC, CVSS, …)
+    // searchable via SPARQL FILTER alongside `skos:prefLabel`.
+    //
+    // Reason for a dedicated block rather than generic bare-key promotion:
+    // alias values must always become literals, even if a vault author
+    // accidentally writes `aliases: ["[[Foo]]"]`. The generic `extract_scalar`
+    // path would emit that as an IRI. This loop bypasses wikilink detection.
+    if let Some(aliases_val) = mapping.get("aliases") {
+        collect_alias_literals(aliases_val, &mut |lit| {
+            triples.push((SKOS_ALT_LABEL.to_string(), RdfObject::Literal(lit)));
+        });
+    }
 
     for (key, value) in &mapping {
         let key_str = match key {
@@ -242,6 +266,37 @@ fn yaml_value_to_str(val: &serde_yaml::Value) -> &str {
     match val {
         serde_yaml::Value::String(s) => s.as_str(),
         _ => "",
+    }
+}
+
+/// Walk an `aliases:` YAML value (scalar, sequence, or null) and call `emit`
+/// for each non-empty string literal found.
+///
+/// Values are always treated as plain literals — wikilink syntax (`[[…]]`)
+/// is NOT unwrapped. Non-string entries (numbers, mappings, null) are ignored.
+/// Empty strings after trim are skipped.
+///
+/// This mirrors the semantics needed for SKOS `altLabel`: alternative lexical
+/// labels are always literals, never IRIs.
+fn collect_alias_literals(value: &serde_yaml::Value, emit: &mut impl FnMut(String)) {
+    match value {
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                if let serde_yaml::Value::String(s) = item {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        emit(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        serde_yaml::Value::String(s) => {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                emit(trimmed.to_string());
+            }
+        }
+        _ => {}
     }
 }
 
@@ -508,6 +563,91 @@ DOI: "10.1000/xyz"
             related.unwrap().1,
             RdfObject::Iri("urn:ontobi:item:concept-k-nearest-neighbors".to_string()),
             "wikilink must resolve to IRI, not literal"
+        );
+    }
+
+    // ── aliases → skos:altLabel ───────────────────────────────────────────────
+
+    fn alt_labels(item: &ParsedItem) -> Vec<String> {
+        item.triples
+            .iter()
+            .filter(|(p, _)| p == "http://www.w3.org/2004/02/skos/core#altLabel")
+            .filter_map(|(_, obj)| match obj {
+                RdfObject::Literal(s) => Some(s.clone()),
+                RdfObject::Iri(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn aliases_flow_style_emit_alt_label_triples() {
+        let content = "---\nskos:prefLabel: General Data Protection Regulation\naliases: [\"GDPR\", \"DSGVO\"]\n---\n";
+        let item = parse_file(content, "_concepts/GDPR.md", &default_config()).unwrap();
+        let alts = alt_labels(&item);
+        assert_eq!(alts.len(), 2, "expected 2 altLabel triples, got {alts:?}");
+        assert!(alts.contains(&"GDPR".to_string()));
+        assert!(alts.contains(&"DSGVO".to_string()));
+    }
+
+    #[test]
+    fn aliases_block_style_emit_alt_label_triples() {
+        let content =
+            "---\nskos:prefLabel: Role-Based Access Control\naliases:\n  - \"RBAC\"\n  - \"Role-Based\"\n---\n";
+        let item = parse_file(content, "_concepts/RBAC.md", &default_config()).unwrap();
+        let alts = alt_labels(&item);
+        assert_eq!(alts.len(), 2, "expected 2 altLabel triples, got {alts:?}");
+        assert!(alts.contains(&"RBAC".to_string()));
+        assert!(alts.contains(&"Role-Based".to_string()));
+    }
+
+    #[test]
+    fn aliases_empty_list_no_triples() {
+        let content = "---\nskos:prefLabel: Foo\naliases: []\n---\n";
+        let item = parse_file(content, "_concepts/Foo.md", &default_config()).unwrap();
+        assert!(
+            alt_labels(&item).is_empty(),
+            "aliases: [] must emit zero altLabel triples"
+        );
+    }
+
+    #[test]
+    fn aliases_absent_no_triples() {
+        let content = "---\nskos:prefLabel: Foo\nskos:definition: Bar.\n---\n";
+        let item = parse_file(content, "_concepts/Foo.md", &default_config()).unwrap();
+        assert!(
+            alt_labels(&item).is_empty(),
+            "no aliases key means zero altLabel triples"
+        );
+    }
+
+    #[test]
+    fn aliases_wikilink_string_stays_literal() {
+        // Defensive: even if a vault author writes a wikilink-looking alias,
+        // it must be emitted as a literal (never an IRI). Aliases are always
+        // lexical strings in SKOS semantics.
+        let content = "---\nskos:prefLabel: Foo\naliases: [\"[[Bar]]\"]\n---\n";
+        let item = parse_file(content, "_concepts/Foo.md", &default_config()).unwrap();
+        let alts = alt_labels(&item);
+        assert_eq!(alts.len(), 1, "expected 1 altLabel literal, got {alts:?}");
+        assert_eq!(
+            alts[0], "[[Bar]]",
+            "wikilink-looking alias must remain a literal, not become an IRI"
+        );
+        // Also assert no IRI was emitted for this predicate
+        let alt_iri = item
+            .triples
+            .iter()
+            .find(|(p, o)| p.ends_with("#altLabel") && matches!(o, RdfObject::Iri(_)));
+        assert!(alt_iri.is_none(), "altLabel must never be an IRI");
+    }
+
+    #[test]
+    fn aliases_null_no_triples() {
+        let content = "---\nskos:prefLabel: Foo\naliases:\n---\n";
+        let item = parse_file(content, "_concepts/Foo.md", &default_config()).unwrap();
+        assert!(
+            alt_labels(&item).is_empty(),
+            "null aliases must emit zero altLabel triples"
         );
     }
 }
