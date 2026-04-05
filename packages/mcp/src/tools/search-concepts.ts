@@ -1,11 +1,18 @@
 import { z } from 'zod'
 import type { SparqlClient } from '../sparql-client.js'
+import { fetchCandidatePool } from '../search/candidates.js'
+import { tokenize } from '../search/tokenize.js'
+import { runTiers, type MatchTier } from '../search/tiers.js'
 
 export const searchConceptsInput = z.object({
   query: z
     .string()
     .min(1)
-    .describe('Search term — matched against concept labels, aliases, and definitions'),
+    .describe(
+      'Search term — matched through a 6-tier fallback engine against concept ' +
+        'labels, aliases, and definitions. Exact label/alias matches always ' +
+        'surface first; multi-word and fuzzy matches fill in below.',
+    ),
   limit: z
     .number()
     .int()
@@ -25,117 +32,99 @@ export interface ConceptSummary {
   aliases: string[]
   broader: string[]
   related: string[]
+  /**
+   * Which tier matched this concept. Lower is stronger:
+   *   1 EXACT_LABEL, 2 EXACT_ALIAS, 3 PHRASE_SUBSTRING,
+   *   4 TOKEN_MATCH, 5 FUZZY_TRIGRAM.
+   */
+  match_tier: MatchTier
+  /** Relative score within `match_tier`. Not comparable across tiers. */
+  match_score: number
 }
 
 /**
  * search_concepts tool handler.
  *
- * Searches concept labels, aliases (`skos:altLabel`), and definitions using
- * SPARQL REGEX. Returns a ranked list of matching concepts with metadata
- * (no document bodies).
+ * Runs a 5-tier fallback search over the concept pool:
  *
- * Design: metadata-first. The agent inspects summaries and navigates the
+ *   Tier 1 EXACT_LABEL       — always contributes
+ *   Tier 2 EXACT_ALIAS       — always contributes
+ *   Tier 3 PHRASE_SUBSTRING  ─┐
+ *   Tier 4 TOKEN_MATCH        │ first non-empty wins
+ *   Tier 5 FUZZY_TRIGRAM     ─┘
+ *
+ * The candidate pool (one row per concept, with aliases collapsed) is
+ * fetched via a single SPARQL query and then ranked entirely in JS.
+ * For each selected hit, broader/related IDs are fetched in a second
+ * round of per-hit relation queries (same pattern as before).
+ *
+ * Design: metadata-first. The agent inspects summaries (including
+ * match_tier so it knows how much to trust the hit) and navigates the
  * graph before any full .md body enters the context window.
  */
 export async function searchConcepts(
   input: SearchConceptsInput,
   sparql: SparqlClient,
 ): Promise<ConceptSummary[]> {
-  // Escape regex special chars in query string
-  const escaped = input.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Step 1: fetch all candidate concepts in one query.
+  const pool = await fetchCandidatePool(sparql)
 
-  // Reason: altLabel is OPTIONAL because not every concept has aliases.
-  // It is not projected in SELECT, so DISTINCT over (identifier, label,
-  // definition) collapses the multi-row join from multiple altLabels.
-  const sparqlQuery = `
-    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-    PREFIX schema: <https://schema.org/>
+  // Step 2: tokenise the query (stopwords removed) for Tiers 4 & 5.
+  const tokens = tokenize(input.query)
 
-    SELECT DISTINCT ?identifier ?label ?definition WHERE {
-      ?concept schema:identifier ?identifier .
-      ?concept skos:prefLabel ?label .
-      OPTIONAL { ?concept skos:definition ?definition . }
-      OPTIONAL { ?concept skos:altLabel ?altLabel . }
-      FILTER(
-        REGEX(STR(?label), "${escaped}", "i") ||
-        REGEX(STR(?definition), "${escaped}", "i") ||
-        REGEX(STR(?altLabel), "${escaped}", "i")
-      )
-    }
-    LIMIT ${input.limit}
-  `
+  // Step 3: run the tiered matcher to select top candidates.
+  const selected = runTiers(input.query, tokens, pool, input.limit)
 
-  const rows = await sparql.select(sparqlQuery)
+  if (selected.length === 0) return []
 
-  // Defensive JS-side dedup by identifier. SPARQL DISTINCT already collapses
-  // on (identifier, label, definition), but per-graph triple duplication
-  // (see relation-query comment below) can still produce duplicate rows.
-  const seenIds = new Set<string>()
-  const uniqueRows = rows.filter((r) => {
-    const id = r['identifier']
-    if (!id || seenIds.has(id)) return false
-    seenIds.add(id)
-    return true
-  })
-
-  // For each result, fetch broader + related + aliases in one query.
+  // Step 4: per-hit, fetch broader/related IDs via the existing
+  //         named-graph relation query. Aliases are already in the
+  //         candidate pool so we do not re-fetch them.
   const results: ConceptSummary[] = await Promise.all(
-    uniqueRows.map(async (row) => {
-      const identifier = row['identifier'] ?? ''
-      const subjectUri = `urn:ontobi:item:${identifier}`
+    selected.map(async (hit) => {
+      const { candidate, tier, score } = hit
+      const subjectUri = `urn:ontobi:item:${candidate.identifier}`
 
-      // Reason: union broader/related/altLabel into a single round-trip to
-      // keep per-hit latency at one query. `?rel` distinguishes the three
-      // categories in the result rows.
+      // Reason: broader/related are relations (concept → concept), not
+      // literals, so they live in the triple store and are looked up
+      // per-hit rather than bulk-fetched. Aliases come from the
+      // candidate pool — already present.
       const relQuery = `
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         PREFIX schema: <https://schema.org/>
 
-        SELECT DISTINCT ?rel ?value WHERE {
-          {
-            VALUES ?pred { skos:broader skos:related }
-            <${subjectUri}> ?pred ?target .
-            ?target schema:identifier ?value .
-            BIND(REPLACE(STR(?pred), ".*#", "") AS ?rel)
-          }
-          UNION
-          {
-            <${subjectUri}> skos:altLabel ?value .
-            BIND("alias" AS ?rel)
-          }
+        SELECT DISTINCT ?rel ?targetId WHERE {
+          VALUES ?pred { skos:broader skos:related }
+          <${subjectUri}> ?pred ?target .
+          ?target schema:identifier ?targetId .
+          BIND(REPLACE(STR(?pred), ".*#", "") AS ?rel)
         }
       `
 
-      // Reason: each concept is stored in its own named graph and the default
-      // graph is the union of all named graphs, so the same (subject, predicate,
-      // object) triple can match once per graph it appears in. SPARQL DISTINCT
-      // handles this at the store level; the JS Set is a safety net against any
-      // remaining duplicates from sloppy SKOS authoring (same target appearing
-      // under multiple predicates, or duplicate triples across graphs).
+      // Reason: same-triple-across-named-graphs produces duplicate rows.
+      // DISTINCT handles the store side; JS Set is a safety net against
+      // SKOS authoring mistakes (same target under multiple predicates).
       const relRows = await sparql.select(relQuery)
       const broader = [
         ...new Set(
-          relRows.filter((r) => r['rel'] === 'broader').map((r) => r['value'] ?? ''),
+          relRows.filter((r) => r['rel'] === 'broader').map((r) => r['targetId'] ?? ''),
         ),
       ].filter((v) => v !== '')
       const related = [
         ...new Set(
-          relRows.filter((r) => r['rel'] === 'related').map((r) => r['value'] ?? ''),
-        ),
-      ].filter((v) => v !== '')
-      const aliases = [
-        ...new Set(
-          relRows.filter((r) => r['rel'] === 'alias').map((r) => r['value'] ?? ''),
+          relRows.filter((r) => r['rel'] === 'related').map((r) => r['targetId'] ?? ''),
         ),
       ].filter((v) => v !== '')
 
       return {
-        identifier,
-        label: row['label'] ?? identifier,
-        definition: row['definition'] ?? '',
-        aliases,
+        identifier: candidate.identifier,
+        label: candidate.label,
+        definition: candidate.definition,
+        aliases: candidate.aliases,
         broader,
         related,
+        match_tier: tier,
+        match_score: score,
       }
     }),
   )
