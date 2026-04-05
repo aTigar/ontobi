@@ -4,8 +4,8 @@ import type { SparqlClient, SparqlRow } from '../src/sparql-client.js'
 
 /**
  * Mock SparqlClient that returns pre-programmed responses based on
- * substring matching in the query. Lets us simulate the Oxigraph behaviour
- * observed in production (duplicated rows from union-of-named-graphs).
+ * substring matching in the SPARQL query. Used to drive the tiered
+ * search engine with known fixtures without needing an endpoint.
  */
 class MockSparqlClient {
   public readonly calls: string[] = []
@@ -26,34 +26,173 @@ class MockSparqlClient {
   }
 }
 
-// Helper: matches the main search query (by projected column names).
-const isMainSearch = (q: string): boolean =>
-  q.includes('?identifier ?label ?definition') && q.includes('skos:altLabel')
+// Helper: matches the candidate-pool query (fetches all concepts with
+// identifier, label, definition, altLabel).
+const isPoolQuery = (q: string): boolean =>
+  q.includes('?identifier ?label ?definition ?altLabel') && !q.includes('FILTER')
 
-// Helper: matches the per-concept relation query (by VALUES clause + altLabel UNION).
+// Helper: matches the per-hit relation query (broader/related lookup by VALUES).
 const isRelationQuery = (q: string): boolean =>
-  q.includes('VALUES ?pred') && q.includes('skos:altLabel')
+  q.includes('VALUES ?pred') && q.includes('skos:broader skos:related')
 
-// ── broader/related deduplication (regression protection from PR #44) ────────
+// ── Candidate pool fetching ──────────────────────────────────────────────────
 
-describe('searchConcepts — broader/related deduplication', () => {
-  it('deduplicates broader IDs that appear multiple times in SPARQL results', async () => {
+describe('searchConcepts — candidate pool', () => {
+  it('fetches the full concept pool via a single unfiltered query', async () => {
     const mock = new MockSparqlClient([
-      // Main search query
       (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-foo', label: 'Foo', definition: 'The Foo concept.' }]
+        isPoolQuery(q)
+          ? [
+              { identifier: 'concept-rbac', label: 'Role-Based Access Control', altLabel: 'RBAC' },
+              { identifier: 'concept-foo', label: 'Foo' },
+            ]
           : null,
-      // Relation lookup, simulating duplicated rows across named graphs
+      (q) => (isRelationQuery(q) ? [] : null),
+    ])
+
+    await searchConcepts({ query: 'RBAC', limit: 10 }, mock as unknown as SparqlClient)
+
+    const poolCalls = mock.calls.filter(isPoolQuery)
+    expect(poolCalls).toHaveLength(1)
+    // Must not contain a FILTER — all filtering is in JS.
+    expect(poolCalls[0]).not.toContain('FILTER')
+  })
+
+  it('groups multiple altLabel rows for one concept into an aliases array', async () => {
+    const mock = new MockSparqlClient([
+      (q) =>
+        isPoolQuery(q)
+          ? [
+              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'GDPR' },
+              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'DSGVO' },
+            ]
+          : null,
+      (q) => (isRelationQuery(q) ? [] : null),
+    ])
+
+    const results = await searchConcepts(
+      { query: 'GDPR', limit: 10 },
+      mock as unknown as SparqlClient,
+    )
+
+    expect(results).toHaveLength(1)
+    expect(results[0]?.aliases.sort()).toEqual(['DSGVO', 'GDPR'])
+  })
+})
+
+// ── Tier matching end-to-end ─────────────────────────────────────────────────
+
+describe('searchConcepts — tier matching', () => {
+  const poolRow = (identifier: string, label: string, definition = '', altLabel?: string) =>
+    altLabel ? { identifier, label, definition, altLabel } : { identifier, label, definition }
+
+  const smallPool = [
+    poolRow('concept-rbac', 'Role-Based Access Control', 'Access control model.', 'RBAC'),
+    poolRow('concept-sast', 'Static Application Security Testing', 'Code analysis.', 'SAST'),
+    poolRow('concept-dast', 'Dynamic Application Security Testing', 'Runtime testing.', 'DAST'),
+  ]
+
+  const makeMock = () =>
+    new MockSparqlClient([
+      (q) => (isPoolQuery(q) ? smallPool : null),
+      (q) => (isRelationQuery(q) ? [] : null),
+    ])
+
+  it('returns exact-label matches with match_tier=1', async () => {
+    const results = await searchConcepts(
+      { query: 'Role-Based Access Control', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    expect(results[0]?.identifier).toBe('concept-rbac')
+    expect(results[0]?.match_tier).toBe(1)
+  })
+
+  it('returns exact-alias matches with match_tier=2', async () => {
+    const results = await searchConcepts(
+      { query: 'RBAC', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    expect(results[0]?.identifier).toBe('concept-rbac')
+    expect(results[0]?.match_tier).toBe(2)
+  })
+
+  it('returns substring matches with match_tier=3', async () => {
+    const results = await searchConcepts(
+      { query: 'Access Control', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    const rbac = results.find((r) => r.identifier === 'concept-rbac')
+    expect(rbac?.match_tier).toBe(3)
+  })
+
+  it('rescues multi-word combined-concept queries via tier 4', async () => {
+    // "SAST DAST" is not a substring of any concept. Tier 4 TOKEN_MATCH
+    // matches both — each concept has one of the two tokens as a label word.
+    const results = await searchConcepts(
+      { query: 'SAST DAST', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    const ids = results.map((r) => r.identifier).sort()
+    expect(ids).toContain('concept-sast')
+    expect(ids).toContain('concept-dast')
+    const sast = results.find((r) => r.identifier === 'concept-sast')
+    expect(sast?.match_tier).toBe(4)
+  })
+
+  it('returns empty array when query matches nothing across all tiers', async () => {
+    const results = await searchConcepts(
+      { query: 'xyzzy completely unrelated gibberish', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    expect(results).toEqual([])
+  })
+
+  it('includes match_tier and match_score on every result', async () => {
+    const results = await searchConcepts(
+      { query: 'application security', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    expect(results.length).toBeGreaterThan(0)
+    for (const r of results) {
+      expect(r.match_tier).toBeGreaterThanOrEqual(1)
+      expect(r.match_tier).toBeLessThanOrEqual(6)
+      expect(typeof r.match_score).toBe('number')
+    }
+  })
+})
+
+// ── broader/related per-hit relation fetching ────────────────────────────────
+
+describe('searchConcepts — broader/related per-hit lookup', () => {
+  it('fires one relation query per selected hit', async () => {
+    const mock = new MockSparqlClient([
+      (q) =>
+        isPoolQuery(q)
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
+          : null,
+      (q) => (isRelationQuery(q) ? [] : null),
+    ])
+
+    await searchConcepts({ query: 'Foo', limit: 10 }, mock as unknown as SparqlClient)
+
+    expect(mock.calls.filter(isRelationQuery)).toHaveLength(1)
+  })
+
+  it('deduplicates broader IDs returned with duplicate rows', async () => {
+    const mock = new MockSparqlClient([
+      (q) =>
+        isPoolQuery(q)
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
+          : null,
       (q) =>
         isRelationQuery(q)
           ? [
-              { rel: 'broader', value: 'concept-bar' },
-              { rel: 'broader', value: 'concept-bar' },
-              { rel: 'broader', value: 'concept-bar' },
-              { rel: 'related', value: 'concept-baz' },
-              { rel: 'related', value: 'concept-baz' },
-              { rel: 'related', value: 'concept-qux' },
+              { rel: 'broader', targetId: 'concept-bar' },
+              { rel: 'broader', targetId: 'concept-bar' },
+              { rel: 'broader', targetId: 'concept-bar' },
+              { rel: 'related', targetId: 'concept-baz' },
+              { rel: 'related', targetId: 'concept-baz' },
+              { rel: 'related', targetId: 'concept-qux' },
             ]
           : null,
     ])
@@ -63,55 +202,28 @@ describe('searchConcepts — broader/related deduplication', () => {
       mock as unknown as SparqlClient,
     )
 
-    expect(results).toHaveLength(1)
     expect(results[0]?.broader).toEqual(['concept-bar'])
     expect(results[0]?.related).toEqual(['concept-baz', 'concept-qux'])
-  })
-
-  it('preserves the order of first occurrence when deduplicating', async () => {
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-x', label: 'X', definition: '' }]
-          : null,
-      (q) =>
-        isRelationQuery(q)
-          ? [
-              { rel: 'related', value: 'concept-a' },
-              { rel: 'related', value: 'concept-b' },
-              { rel: 'related', value: 'concept-a' }, // dup of first
-              { rel: 'related', value: 'concept-c' },
-              { rel: 'related', value: 'concept-b' }, // dup of second
-            ]
-          : null,
-    ])
-
-    const results = await searchConcepts(
-      { query: 'X', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    expect(results[0]?.related).toEqual(['concept-a', 'concept-b', 'concept-c'])
   })
 
   it('filters out empty-string target IDs', async () => {
     const mock = new MockSparqlClient([
       (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-x', label: 'X', definition: '' }]
+        isPoolQuery(q)
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
           : null,
       (q) =>
         isRelationQuery(q)
           ? [
-              { rel: 'broader', value: 'concept-a' },
-              { rel: 'broader', value: '' },
-              { rel: 'related', value: 'concept-b' },
+              { rel: 'broader', targetId: 'concept-a' },
+              { rel: 'broader', targetId: '' },
+              { rel: 'related', targetId: 'concept-b' },
             ]
           : null,
     ])
 
     const results = await searchConcepts(
-      { query: 'X', limit: 10 },
+      { query: 'Foo', limit: 10 },
       mock as unknown as SparqlClient,
     )
 
@@ -122,7 +234,7 @@ describe('searchConcepts — broader/related deduplication', () => {
   it('returns empty arrays when no relations exist', async () => {
     const mock = new MockSparqlClient([
       (q) =>
-        isMainSearch(q)
+        isPoolQuery(q)
           ? [{ identifier: 'concept-solo', label: 'Solo', definition: '' }]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
@@ -135,13 +247,12 @@ describe('searchConcepts — broader/related deduplication', () => {
 
     expect(results[0]?.broader).toEqual([])
     expect(results[0]?.related).toEqual([])
-    expect(results[0]?.aliases).toEqual([])
   })
 
-  it('includes DISTINCT in the SPARQL query to deduplicate at the store level', async () => {
+  it('uses DISTINCT in the relation query', async () => {
     const mock = new MockSparqlClient([
       (q) =>
-        isMainSearch(q)
+        isPoolQuery(q)
           ? [{ identifier: 'concept-x', label: 'X', definition: '' }]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
@@ -149,151 +260,7 @@ describe('searchConcepts — broader/related deduplication', () => {
 
     await searchConcepts({ query: 'X', limit: 10 }, mock as unknown as SparqlClient)
 
-    const relationCall = mock.calls.find(isRelationQuery) ?? ''
-    expect(relationCall).toMatch(/SELECT\s+DISTINCT/)
-  })
-})
-
-// ── aliases surfacing (new in this PR) ────────────────────────────────────────
-
-describe('searchConcepts — aliases surfacing', () => {
-  it('populates aliases array from skos:altLabel triples', async () => {
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-gdpr', label: 'General Data Protection Regulation', definition: 'EU regulation.' }]
-          : null,
-      (q) =>
-        isRelationQuery(q)
-          ? [
-              { rel: 'alias', value: 'GDPR' },
-              { rel: 'alias', value: 'DSGVO' },
-              { rel: 'broader', value: 'concept-privacy' },
-            ]
-          : null,
-    ])
-
-    const results = await searchConcepts(
-      { query: 'GDPR', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    expect(results).toHaveLength(1)
-    expect(results[0]?.aliases).toEqual(['GDPR', 'DSGVO'])
-    expect(results[0]?.broader).toEqual(['concept-privacy'])
-    expect(results[0]?.related).toEqual([])
-  })
-
-  it('returns empty aliases array when concept has no altLabels', async () => {
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-foo', label: 'Foo', definition: 'The Foo concept.' }]
-          : null,
-      (q) => (isRelationQuery(q) ? [] : null),
-    ])
-
-    const results = await searchConcepts(
-      { query: 'Foo', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    expect(results).toHaveLength(1)
-    expect(results[0]?.aliases).toEqual([])
-  })
-
-  it('matches against aliases in SPARQL FILTER (query shape contains altLabel REGEX)', async () => {
-    const mock = new MockSparqlClient([
-      (q) => (isMainSearch(q) ? [] : null),
-    ])
-
-    await searchConcepts({ query: 'CVSS', limit: 10 }, mock as unknown as SparqlClient)
-
-    // The main search query must REGEX-match against altLabel too
-    const mainQuery = mock.calls[0] ?? ''
-    expect(mainQuery).toContain('skos:altLabel')
-    expect(mainQuery).toMatch(/REGEX\(STR\(\?altLabel\)/)
-  })
-})
-
-// ── identifier-row deduplication (belt-and-braces with SPARQL DISTINCT) ──────
-
-describe('searchConcepts — row deduplication', () => {
-  it('deduplicates identifier rows before issuing per-concept queries', async () => {
-    // Oxigraph's default-graph-as-union behaviour can produce duplicate rows
-    // even with DISTINCT when the same concept appears across multiple graphs.
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [
-              { identifier: 'concept-foo', label: 'Foo', definition: 'Foo.' },
-              { identifier: 'concept-foo', label: 'Foo', definition: 'Foo.' },
-              { identifier: 'concept-foo', label: 'Foo', definition: 'Foo.' },
-            ]
-          : null,
-      (q) => (isRelationQuery(q) ? [] : null),
-    ])
-
-    const results = await searchConcepts(
-      { query: 'Foo', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    // Exactly one result and exactly one relation query (per unique identifier)
-    expect(results).toHaveLength(1)
-    expect(results[0]?.identifier).toBe('concept-foo')
-    const relationCalls = mock.calls.filter(isRelationQuery)
-    expect(relationCalls).toHaveLength(1)
-  })
-
-  it('deduplicates broader/related/aliases values from duplicate relation rows', async () => {
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [{ identifier: 'concept-rbac', label: 'Role-Based Access Control', definition: 'RBAC.' }]
-          : null,
-      (q) =>
-        isRelationQuery(q)
-          ? [
-              { rel: 'broader', value: 'concept-authorization' },
-              { rel: 'broader', value: 'concept-authorization' },
-              { rel: 'related', value: 'concept-least-privilege' },
-              { rel: 'related', value: 'concept-least-privilege' },
-              { rel: 'alias', value: 'RBAC' },
-              { rel: 'alias', value: 'RBAC' },
-            ]
-          : null,
-    ])
-
-    const results = await searchConcepts(
-      { query: 'RBAC', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    expect(results).toHaveLength(1)
-    expect(results[0]?.broader).toEqual(['concept-authorization'])
-    expect(results[0]?.related).toEqual(['concept-least-privilege'])
-    expect(results[0]?.aliases).toEqual(['RBAC'])
-  })
-
-  it('filters out empty identifier rows defensively', async () => {
-    const mock = new MockSparqlClient([
-      (q) =>
-        isMainSearch(q)
-          ? [
-              { identifier: '', label: 'BadRow', definition: '' },
-              { identifier: 'concept-good', label: 'Good', definition: '' },
-            ]
-          : null,
-      (q) => (isRelationQuery(q) ? [] : null),
-    ])
-
-    const results = await searchConcepts(
-      { query: 'Any', limit: 10 },
-      mock as unknown as SparqlClient,
-    )
-
-    expect(results).toHaveLength(1)
-    expect(results[0]?.identifier).toBe('concept-good')
+    const relQuery = mock.calls.find(isRelationQuery) ?? ''
+    expect(relQuery).toMatch(/SELECT\s+DISTINCT/)
   })
 })
