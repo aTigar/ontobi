@@ -291,3 +291,70 @@ async fn concept_with_space_in_filename_is_indexed() {
         "concept with space in filename must be indexed; got {labels:?}"
     );
 }
+
+/// Regression: `aliases:` frontmatter must surface as `skos:altLabel` literals
+/// so that LLM agents can find concepts by acronym (GDPR, DAST, RBAC, CVSS, …).
+/// Covers the bug tracked by issue #40.
+#[tokio::test]
+async fn aliases_frontmatter_becomes_alt_label_triples() {
+    let vault = TempDir::new().unwrap();
+    let dir = vault.path().join("_concepts");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("GDPR.md"),
+        "---\nskos:prefLabel: General Data Protection Regulation\n\
+         skos:definition: EU data-protection regulation.\n\
+         \"@type\": DefinedTerm\nidentifier: concept-gdpr\n\
+         dateCreated: \"[[01.03.2026]]\"\n\
+         aliases:\n  - \"GDPR\"\n  - \"DSGVO\"\n\
+         tags: []\n---\n",
+    )
+    .unwrap();
+
+    let store = OntobiStore::new().unwrap();
+    store.index_vault(vault.path()).unwrap();
+
+    let app = app(store);
+    let sparql = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT ?alt WHERE { ?s skos:altLabel ?alt . } ORDER BY ?alt";
+    let (status, json) = post_sparql(&app, sparql).await;
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let alts: Vec<&str> = json["results"]["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|b| b["alt"]["value"].as_str())
+        .collect();
+    assert_eq!(
+        alts,
+        vec!["DSGVO", "GDPR"],
+        "aliases must be indexed as skos:altLabel literals"
+    );
+
+    // Also assert the REGEX filter round-trips: searching for an alias returns
+    // the concept via its altLabel.
+    let search_sparql = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        PREFIX schema: <https://schema.org/>
+        SELECT ?identifier ?label WHERE {
+          ?concept schema:identifier ?identifier .
+          ?concept skos:prefLabel ?label .
+          OPTIONAL { ?concept skos:altLabel ?altLabel . }
+          FILTER(
+            REGEX(STR(?label), \"GDPR\", \"i\") ||
+            REGEX(STR(?altLabel), \"GDPR\", \"i\")
+          )
+        }";
+    let (status, json) = post_sparql(&app, search_sparql).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let ids: Vec<&str> = json["results"]["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|b| b["identifier"]["value"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"concept-gdpr"),
+        "REGEX over skos:altLabel must find concept-gdpr; got {ids:?}"
+    );
+}
