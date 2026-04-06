@@ -16,18 +16,21 @@
  * tiers and returning the first non-empty tier (with exact-match tiers
  * 1 and 2 always contributing):
  *
- * | # | Name             | Semantics                                           |
- * |---|------------------|-----------------------------------------------------|
- * | 1 | EXACT_LABEL      | case-insensitive equality with skos:prefLabel       |
- * | 2 | EXACT_ALIAS      | case-insensitive equality with any skos:altLabel    |
- * | 3 | PHRASE_SUBSTRING | full query string is substring of any field         |
- * | 4 | TOKEN_MATCH      | ≥1 whole-word token hit; heavy label weighting +    |
- * |   |                  | all-tokens bonus                                    |
- * | 5 | FUZZY_TRIGRAM    | trigram Jaccard ≥ threshold on labels + aliases     |
+ * | #   | Name             | Semantics                                           |
+ * |-----|------------------|-----------------------------------------------------|
+ * | 1   | EXACT_LABEL      | case-insensitive equality with skos:prefLabel       |
+ * | 2   | EXACT_ALIAS      | case-insensitive equality with any skos:altLabel    |
+ * | 3   | PHRASE_SUBSTRING | full query string is substring of any field         |
+ * | 4   | TOKEN_MATCH      | ≥1 whole-word token hit in label/alias; heavy       |
+ * |     |                  | label weighting + all-tokens bonus                  |
+ * | 4.5 | TOKEN_DEF_ONLY   | ≥1 whole-word token hit in definition ONLY (#49);   |
+ * |     |                  | reduced scoring, ranked below Tier 4                |
+ * | 5   | FUZZY_TRIGRAM    | trigram Jaccard ≥ threshold on labels + aliases     |
  *
  * Composition: Tiers 1 and 2 ALWAYS contribute; Tiers 3–5 use early-exit
- * (first non-empty wins). A concept that matches multiple tiers keeps
- * the lowest (best) tier number.
+ * (first non-empty wins). Tier 4b is bundled with Tier 4 — if either
+ * has hits, both contribute and Tier 5 is skipped. A concept that
+ * matches multiple tiers keeps the lowest (best) tier number.
  *
  * Tier 4 design: a single unified token tier replaces what was originally
  * TOKEN_AND + TOKEN_OR_RANKED. Benchmark evidence (query "Data Lake vs
@@ -43,8 +46,15 @@ import type { ConceptCandidate } from './candidates.js'
 import { normalize, countTokenHits, hasWholeWord } from './tokenize.js'
 import { jaccardSimilarity, DEFAULT_FUZZY_THRESHOLD } from './fuzzy.js'
 
-/** Numeric tier identifier for the response `match_tier` field. */
-export type MatchTier = 1 | 2 | 3 | 4 | 5
+/**
+ * Numeric tier identifier for the response `match_tier` field.
+ *
+ * 4.5 = Tier 4b — definition-only token match (#49). Concepts that match
+ * query tokens ONLY in their definition (zero label/alias hits). Scored
+ * lower than Tier 4 to prevent bridging noise, but better than Tier 5
+ * fuzzy which is a last resort.
+ */
+export type MatchTier = 1 | 2 | 3 | 4 | 4.5 | 5
 
 /**
  * A single candidate scored against the query.
@@ -149,7 +159,9 @@ export function tierPhraseSubstring(
  *
  *     bonus = (all query tokens matched across fields) ? TOKEN_COUNT × ALL_BONUS : 0
  *
- *     score = base + bonus
+ *     dampingFactor = 1 / (1 + DAMPING_K × linkCount)   [hub-node damping #50]
+ *
+ *     score = (base + bonus) × dampingFactor
  *
  * - LABEL_WEIGHT=4 is deliberately larger than DEF_CAP×DEF_WEIGHT=2, so
  *   a single label hit dominates any number of definition hits. This is
@@ -173,13 +185,38 @@ const DEF_WEIGHT = 1
 const DEF_CAP = 2
 /** Per-token bonus when all tokens matched across any field. */
 const ALL_TOKENS_BONUS = 0.5
+/** Maximum definition hits counted for Tier 4b (definition-only matches, #49). */
+const DEF_CAP_4B = 3
+/** Weight per definition hit for Tier 4b. Lower than DEF_WEIGHT to rank below Tier 4. */
+const DEF_WEIGHT_4B = 0.5
+/**
+ * Hub-node damping coefficient (#50). Controls how strongly high-linkCount
+ * concepts are penalised.
+ *
+ *   dampingFactor = 1 / (1 + DAMPING_K × linkCount)
+ *
+ * With K=0.1: linkCount 0 → 1.0, 5 → 0.67, 13 → 0.43, 17 → 0.37.
+ * A concept with 13 links (e.g. LLM Security) needs ~2.3× the raw token
+ * score to rank equally with an unlinked concept.
+ */
+const DAMPING_K = 0.1
+
+/**
+ * Result of `tierTokenMatch` containing both Tier 4 (label/alias hits)
+ * and Tier 4b (definition-only hits, #49).
+ */
+export interface TokenMatchResult {
+  tier4: ScoredCandidate[]
+  tier4b: ScoredCandidate[]
+}
 
 export function tierTokenMatch(
   tokens: readonly string[],
   pool: readonly ConceptCandidate[],
-): ScoredCandidate[] {
-  if (tokens.length === 0) return []
-  const out: ScoredCandidate[] = []
+): TokenMatchResult {
+  if (tokens.length === 0) return { tier4: [], tier4b: [] }
+  const tier4: ScoredCandidate[] = []
+  const tier4b: ScoredCandidate[] = []
   for (const c of pool) {
     const aliasJoined = c.aliases.map(normalize).join(' ')
     const labelHits = countTokenHits([...tokens], c.label)
@@ -189,12 +226,21 @@ export function tierTokenMatch(
     // At least one field hit required. Concepts matching nothing are skipped.
     if (labelHits + aliasHits + defHitsRaw === 0) continue
 
-    // Reject pure bridging matches: if NEITHER label nor aliases had any
-    // token hit, this concept is at best a weak definition reference.
-    // Benchmark case: "Data Lake vs Data Warehouse" matched "Data Lakehouse"
-    // only via its definition naming both target concepts — the user wanted
-    // Data Lake and Data Warehouse themselves.
-    if (labelHits === 0 && aliasHits === 0) continue
+    // Hub-node damping (#50): reduce score for heavily-connected concepts
+    // that match on generic tokens (e.g. "security", "attack"). Leaf
+    // concepts with linkCount=0 are unaffected.
+    const dampingFactor = 1 / (1 + DAMPING_K * c.linkCount)
+
+    // Definition-only matches: Tier 4b (#49).
+    // Previously rejected entirely ("bridging concept filter"). Now
+    // collected at a lower tier so they can fill in when Tier 4 is empty
+    // or sparse. Scored with reduced weight and cap.
+    if (labelHits === 0 && aliasHits === 0) {
+      const defHits4b = Math.min(defHitsRaw, DEF_CAP_4B)
+      const score = defHits4b * DEF_WEIGHT_4B * dampingFactor
+      tier4b.push({ candidate: c, tier: 4.5, score })
+      continue
+    }
 
     const defHits = Math.min(defHitsRaw, DEF_CAP)
 
@@ -211,10 +257,12 @@ export function tierTokenMatch(
 
     const base = labelHits * LABEL_WEIGHT + aliasHits * ALIAS_WEIGHT + defHits * DEF_WEIGHT
     const bonus = allMatched ? tokens.length * ALL_TOKENS_BONUS : 0
-    const score = base + bonus
-    out.push({ candidate: c, tier: 4, score })
+    const raw = base + bonus
+    const score = raw * dampingFactor
+
+    tier4.push({ candidate: c, tier: 4, score })
   }
-  return out
+  return { tier4, tier4b }
 }
 
 /**
@@ -279,10 +327,17 @@ export function runTiers(
     ...tierExactAlias(query, pool),
   ]
 
-  // Early-exit fallback chain: Tier 3 → 4 → 5.
+  // Early-exit fallback chain: Tier 3 → 4 (+4b) → 5.
+  //
+  // Tier 4b (#49): definition-only matches are included BELOW Tier 4
+  // results when Tier 4 has hits, or stand alone when Tier 4 is empty.
+  // Either way, if Tier 4 or 4b produced anything, Tier 5 is skipped.
   let fallbackHits: ScoredCandidate[] = []
   fallbackHits = tierPhraseSubstring(query, pool)
-  if (fallbackHits.length === 0) fallbackHits = tierTokenMatch(tokens, pool)
+  if (fallbackHits.length === 0) {
+    const { tier4, tier4b } = tierTokenMatch(tokens, pool)
+    fallbackHits = [...tier4, ...tier4b]
+  }
   if (fallbackHits.length === 0) fallbackHits = tierFuzzyTrigram(query, pool)
 
   // Merge: dedup by identifier, keep LOWEST tier (best match quality).

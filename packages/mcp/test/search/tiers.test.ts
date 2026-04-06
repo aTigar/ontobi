@@ -11,44 +11,34 @@ import {
 
 // ── Test fixture: a small representative concept pool ────────────────────────
 
+/** Helper: create a ConceptCandidate with sensible defaults for test fixtures. */
+const cc = (
+  identifier: string,
+  label: string,
+  definition: string,
+  aliases: string[] = [],
+  filePath = '',
+  linkCount = 0,
+): ConceptCandidate => ({ identifier, label, definition, aliases, filePath, linkCount })
+
 const POOL: ConceptCandidate[] = [
-  {
-    identifier: 'concept-rbac',
-    label: 'Role-Based Access Control',
-    definition:
-      'An access control model in which permissions are associated with named roles.',
-    aliases: ['RBAC'],
-  },
-  {
-    identifier: 'concept-gdpr',
-    label: 'General Data Protection Regulation',
-    definition: 'EU regulation on data protection and privacy.',
-    aliases: ['GDPR', 'Regulation (EU) 2016/679'],
-  },
-  {
-    identifier: 'concept-sast',
-    label: 'Static Application Security Testing',
-    definition: 'Analyses source code without executing it.',
-    aliases: ['SAST', 'Static Code Analysis'],
-  },
-  {
-    identifier: 'concept-dast',
-    label: 'Dynamic Application Security Testing',
-    definition: 'Tests a running application for security flaws.',
-    aliases: ['DAST'],
-  },
-  {
-    identifier: 'concept-vulnerability',
-    label: 'Vulnerability',
-    definition: 'A weakness that can be exploited by a threat actor.',
-    aliases: [],
-  },
-  {
-    identifier: 'concept-authentication',
-    label: 'Authentication',
-    definition: 'The process of verifying identity.',
-    aliases: ['AuthN'],
-  },
+  cc('concept-rbac', 'Role-Based Access Control',
+    'An access control model in which permissions are associated with named roles.',
+    ['RBAC']),
+  cc('concept-gdpr', 'General Data Protection Regulation',
+    'EU regulation on data protection and privacy.',
+    ['GDPR', 'Regulation (EU) 2016/679']),
+  cc('concept-sast', 'Static Application Security Testing',
+    'Analyses source code without executing it.',
+    ['SAST', 'Static Code Analysis']),
+  cc('concept-dast', 'Dynamic Application Security Testing',
+    'Tests a running application for security flaws.',
+    ['DAST']),
+  cc('concept-vulnerability', 'Vulnerability',
+    'A weakness that can be exploited by a threat actor.'),
+  cc('concept-authentication', 'Authentication',
+    'The process of verifying identity.',
+    ['AuthN']),
 ]
 
 // ── Tier 1: EXACT_LABEL ───────────────────────────────────────────────────────
@@ -148,7 +138,7 @@ describe('tierPhraseSubstring', () => {
 
 describe('tierTokenMatch', () => {
   it('matches when at least one token hits the label', () => {
-    const hits = tierTokenMatch(['role-based'], POOL)
+    const { tier4: hits } = tierTokenMatch(['role-based'], POOL)
     expect(hits.some((h) => h.candidate.identifier === 'concept-rbac')).toBe(true)
     const rbac = hits.find((h) => h.candidate.identifier === 'concept-rbac')!
     expect(rbac.tier).toBe(4)
@@ -157,7 +147,7 @@ describe('tierTokenMatch', () => {
   it('matches combined-concept queries (no single target has all tokens)', () => {
     // "SAST DAST" query: each concept has ONE of the two tokens. TOKEN_MATCH
     // returns both.
-    const hits = tierTokenMatch(['sast', 'dast'], POOL)
+    const { tier4: hits } = tierTokenMatch(['sast', 'dast'], POOL)
     const ids = hits.map((h) => h.candidate.identifier).sort()
     expect(ids).toContain('concept-sast')
     expect(ids).toContain('concept-dast')
@@ -166,55 +156,39 @@ describe('tierTokenMatch', () => {
   it('ranks concepts with more label-token matches highest', () => {
     // "application security testing" hits SAST and DAST labels (3 tokens each)
     // and nothing else has that many label hits.
-    const hits = tierTokenMatch(['application', 'security', 'testing'], POOL)
+    const { tier4: hits } = tierTokenMatch(['application', 'security', 'testing'], POOL)
     expect(hits.length).toBeGreaterThanOrEqual(2)
     const topTwo = hits.slice().sort((a, b) => b.score - a.score).slice(0, 2)
     const topTwoIds = topTwo.map((h) => h.candidate.identifier).sort()
     expect(topTwoIds).toEqual(['concept-dast', 'concept-sast'])
   })
 
-  it('rejects "bridging" concepts that match only via definition', () => {
-    // A concept whose label and aliases have none of the query tokens — it
-    // only mentions them in its definition — is a weak bridging match and
-    // must be excluded so the real target concepts surface.
+  it('sends definition-only matches to tier4b instead of rejecting them (#49)', () => {
+    // Previously: "bridging" concepts matching only via definition were rejected.
+    // Now: they land in tier4b (tier=4.5) with reduced score.
     const bridgingPool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-bridge',
-        label: 'Some Bridge',
-        definition: 'Combines foo with bar for quux workloads.',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-foo',
-        label: 'Foo',
-        definition: 'The Foo concept.',
-        aliases: [],
-      },
+      cc('concept-bridge', 'Some Bridge', 'Combines foo with bar for quux workloads.'),
+      cc('concept-foo', 'Foo', 'The Foo concept.'),
     ]
-    const hits = tierTokenMatch(['foo', 'bar', 'quux'], bridgingPool)
-    expect(hits.find((h) => h.candidate.identifier === 'concept-bridge')).toBeUndefined()
-    expect(hits.find((h) => h.candidate.identifier === 'concept-foo')).toBeDefined()
+    const { tier4, tier4b } = tierTokenMatch(['foo', 'bar', 'quux'], bridgingPool)
+    // concept-foo has a label hit → goes to tier4
+    expect(tier4.find((h) => h.candidate.identifier === 'concept-foo')).toBeDefined()
+    // concept-bridge has definition-only hits → goes to tier4b
+    expect(tier4b.find((h) => h.candidate.identifier === 'concept-bridge')).toBeDefined()
+    expect(tier4b[0]?.tier).toBe(4.5)
+    // tier4b score should be lower than tier4 scores
+    expect(tier4b[0]!.score).toBeLessThan(tier4[0]!.score)
   })
 
   it('gives a bonus when ALL query tokens matched across fields', () => {
     // Compare two concepts where one matches all tokens (bonus) and the
     // other matches only some (no bonus).
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-all',
-        label: 'Foo Bar',
-        definition: 'Relates to Quux.',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-some',
-        label: 'Foo Bar',
-        definition: 'Just some words.',
-        aliases: [],
-      },
+      cc('concept-all', 'Foo Bar', 'Relates to Quux.'),
+      cc('concept-some', 'Foo Bar', 'Just some words.'),
     ]
     // tokens include "quux" which only concept-all has (in definition)
-    const hits = tierTokenMatch(['foo', 'bar', 'quux'], pool)
+    const { tier4: hits } = tierTokenMatch(['foo', 'bar', 'quux'], pool)
     const all = hits.find((h) => h.candidate.identifier === 'concept-all')!
     const some = hits.find((h) => h.candidate.identifier === 'concept-some')!
     expect(all.score).toBeGreaterThan(some.score)
@@ -224,44 +198,108 @@ describe('tierTokenMatch', () => {
     // Deliberately constructed: one concept has 1 label hit,
     // another has 5 definition hits. Label must still win.
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-label-only',
-        label: 'Foo Banana',
-        definition: '',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-def-heavy',
-        label: 'Unrelated Thing',
-        definition: 'banana banana banana banana banana',
-        aliases: [],
-      },
+      cc('concept-label-only', 'Foo Banana', ''),
+      cc('concept-def-heavy', 'Unrelated Thing', 'banana banana banana banana banana'),
     ]
-    const hits = tierTokenMatch(['banana'], pool)
-    const byScore = hits.slice().sort((a, b) => b.score - a.score)
-    expect(byScore[0]?.candidate.identifier).toBe('concept-label-only')
+    const { tier4, tier4b } = tierTokenMatch(['banana'], pool)
+    // concept-label-only goes to tier4 (label hit), concept-def-heavy goes to tier4b
+    expect(tier4[0]?.candidate.identifier).toBe('concept-label-only')
+    expect(tier4b[0]?.candidate.identifier).toBe('concept-def-heavy')
   })
 
   it('returns empty for empty tokens', () => {
-    expect(tierTokenMatch([], POOL)).toHaveLength(0)
+    const { tier4, tier4b } = tierTokenMatch([], POOL)
+    expect(tier4).toHaveLength(0)
+    expect(tier4b).toHaveLength(0)
   })
 
   it('returns empty when no token matches anywhere', () => {
-    expect(tierTokenMatch(['quantum', 'cryptography'], POOL)).toHaveLength(0)
+    const { tier4, tier4b } = tierTokenMatch(['quantum', 'cryptography'], POOL)
+    expect(tier4).toHaveLength(0)
+    expect(tier4b).toHaveLength(0)
   })
 
   it('does not match internal substrings (whole-word only)', () => {
     // "lake" must NOT match a label containing "lakehouse" via TOKEN_MATCH,
     // because that would surface bridging concepts over real targets.
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-lakehouse',
-        label: 'Lakehouse',
-        definition: '',
-        aliases: [],
-      },
+      cc('concept-lakehouse', 'Lakehouse', ''),
     ]
-    expect(tierTokenMatch(['lake'], pool)).toHaveLength(0)
+    const { tier4, tier4b } = tierTokenMatch(['lake'], pool)
+    expect(tier4).toHaveLength(0)
+    expect(tier4b).toHaveLength(0)
+  })
+
+  it('applies hub-node damping: high linkCount reduces score (#50)', () => {
+    // Two concepts with identical label tokens but different link counts.
+    // The hub (linkCount=13, like LLM Security) should score lower.
+    const pool: ConceptCandidate[] = [
+      cc('concept-leaf', 'Security Testing', '', [], '', 0),
+      cc('concept-hub', 'Security Testing', '', [], '', 13),
+    ]
+    const { tier4: hits } = tierTokenMatch(['security', 'testing'], pool)
+    const leaf = hits.find((h) => h.candidate.identifier === 'concept-leaf')!
+    const hub = hits.find((h) => h.candidate.identifier === 'concept-hub')!
+    expect(leaf.score).toBeGreaterThan(hub.score)
+  })
+
+  it('hub damping does not affect concepts with linkCount=0', () => {
+    const pool: ConceptCandidate[] = [
+      cc('concept-zero', 'Foo Bar', '', [], '', 0),
+      cc('concept-linked', 'Foo Bar', '', [], '', 10),
+    ]
+    const { tier4: hits } = tierTokenMatch(['foo'], pool)
+    const zero = hits.find((h) => h.candidate.identifier === 'concept-zero')!
+    const linked = hits.find((h) => h.candidate.identifier === 'concept-linked')!
+    // linkCount=0 → damping factor 1.0 → full score preserved
+    // linkCount=10 → damping factor 0.5 → half score
+    expect(zero.score).toBeGreaterThan(linked.score)
+    expect(zero.score).toBe(linked.score * 2)
+  })
+
+  it('hub damping ranks specific concept above generic hub for same query', () => {
+    // Simulates the real benchmark case: "injection attack controls"
+    // LLM Security (hub, 13 links) has "security" in label → score 4 * 0.43 = 1.74
+    // SQL Injection (leaf, 2 links) has "injection" in label → score 4 * 0.83 = 3.33
+    const pool: ConceptCandidate[] = [
+      cc('concept-llm-security', 'LLM Security',
+        'attacks including prompt injection, data poisoning, model inversion',
+        [], '', 13),
+      cc('concept-sql-injection', 'SQL Injection',
+        'A code injection technique that exploits a security vulnerability',
+        [], '', 2),
+    ]
+    const { tier4: hits } = tierTokenMatch(['injection', 'security'], pool)
+    const byScore = hits.slice().sort((a, b) => b.score - a.score)
+    // SQL Injection should rank above LLM Security despite both matching
+    expect(byScore[0]?.candidate.identifier).toBe('concept-sql-injection')
+  })
+
+  it('tier4b applies hub damping to definition-only matches (#49 + #50)', () => {
+    const pool: ConceptCandidate[] = [
+      cc('concept-leaf-def', 'Unrelated Leaf', 'injection attack vulnerability', [], '', 0),
+      cc('concept-hub-def', 'Unrelated Hub', 'injection attack vulnerability', [], '', 13),
+    ]
+    const { tier4b } = tierTokenMatch(['injection', 'attack'], pool)
+    const leaf = tier4b.find((h) => h.candidate.identifier === 'concept-leaf-def')!
+    const hub = tier4b.find((h) => h.candidate.identifier === 'concept-hub-def')!
+    expect(leaf.score).toBeGreaterThan(hub.score)
+  })
+
+  it('tier4b scores are capped and lower than tier4 scores (#49)', () => {
+    // A concept matching 5 tokens in definition should still score lower
+    // than a concept matching 1 token in label.
+    const pool: ConceptCandidate[] = [
+      cc('concept-label-hit', 'Foo Quux', ''),
+      cc('concept-def-only', 'Unrelated Name', 'foo bar baz quux wibble'),
+    ]
+    const { tier4, tier4b } = tierTokenMatch(['foo', 'bar', 'baz', 'quux', 'wibble'], pool)
+    expect(tier4.length).toBeGreaterThan(0)
+    expect(tier4b.length).toBeGreaterThan(0)
+    // Even with 5 def hits (capped at 3) × 0.5 = 1.5, tier4b score < tier4 min score
+    const minTier4 = Math.min(...tier4.map((h) => h.score))
+    const maxTier4b = Math.max(...tier4b.map((h) => h.score))
+    expect(minTier4).toBeGreaterThan(maxTier4b)
   })
 })
 
@@ -374,5 +412,46 @@ describe('runTiers composition', () => {
   it('returns empty array when no tier matches', () => {
     const results = runTiers('qqqqqqqqqqqqqqq', ['qqqqqqqqqqqqqqq'], POOL, 10)
     expect(results).toEqual([])
+  })
+
+  it('includes tier 4b (definition-only) results alongside tier 4 (#49)', () => {
+    // Pool with one label-match concept and one definition-only concept.
+    // Both should appear in runTiers output, with tier 4 before tier 4.5.
+    // Use "SAST DAST" — no exact label, no substring, falls to tier 4.
+    // Add a concept that mentions "sast" only in its definition.
+    const pool: ConceptCandidate[] = [
+      cc('concept-sast', 'Static Application Security Testing', '', ['SAST']),
+      cc('concept-dast', 'Dynamic Application Security Testing', '', ['DAST']),
+      cc('concept-def-only', 'Secure Development Lifecycle',
+        'Integrates sast and dast tools into the build pipeline.'),
+    ]
+    const results = runTiers('SAST DAST', ['sast', 'dast'], pool, 10)
+    const sast = results.find((r) => r.candidate.identifier === 'concept-sast')
+    const dast = results.find((r) => r.candidate.identifier === 'concept-dast')
+    const defOnly = results.find((r) => r.candidate.identifier === 'concept-def-only')
+    expect(sast).toBeDefined()
+    expect(dast).toBeDefined()
+    expect(defOnly).toBeDefined()
+    // SAST/DAST have alias hits → tier 4 (or tier 2 for exact alias)
+    expect(defOnly!.tier).toBe(4.5)
+    // Definition-only concept should sort after label/alias matches
+    const defIdx = results.indexOf(defOnly!)
+    const sastIdx = results.indexOf(sast!)
+    expect(sastIdx).toBeLessThan(defIdx)
+  })
+
+  it('tier 4b alone prevents fallthrough to tier 5 (#49)', () => {
+    // Pool where no label/alias matches exist — only definition matches.
+    // Tier 4b should fire and prevent fuzzy tier 5 from running.
+    // Use tokens that don't form a substring in any single field.
+    const pool: ConceptCandidate[] = [
+      cc('concept-def-only', 'Completely Unrelated ZZZZZ',
+        'Handles quux and wibble for enterprise workloads.'),
+    ]
+    const results = runTiers('quux wibble', ['quux', 'wibble'], pool, 10)
+    expect(results).toHaveLength(1)
+    expect(results[0]?.tier).toBe(4.5)
+    // Should NOT have tier 5 results
+    expect(results.some((r) => r.tier === 5)).toBe(false)
   })
 })
