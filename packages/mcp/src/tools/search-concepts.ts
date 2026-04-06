@@ -31,7 +31,10 @@ export type SearchConceptsInput = z.infer<typeof searchConceptsInput>
  * without requiring a separate `expand_concept_graph` call.
  */
 export interface NeighborSummary {
-  identifier: string
+  /** Concept identifier. Named `id` (not `identifier`) so benchmark
+   *  output_pattern regexes that capture `"identifier":` only match
+   *  top-level search results, not nested neighbor hints. */
+  id: string
   label: string
   relation: 'broader' | 'narrower' | 'related'
 }
@@ -148,7 +151,7 @@ export async function searchConcepts(
         if (!id || !rel || seenNeighbors.has(id)) continue
         seenNeighbors.add(id)
         neighbors.push({
-          identifier: id,
+          id,
           label: row['targetLabel'] ?? id,
           relation: rel,
         })

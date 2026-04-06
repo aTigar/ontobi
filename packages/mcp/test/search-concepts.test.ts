@@ -339,17 +339,17 @@ describe('searchConcepts — neighbors auto-expansion', () => {
 
     expect(results[0]?.neighbors).toHaveLength(3)
     expect(results[0]?.neighbors).toContainEqual({
-      identifier: 'concept-parent',
+      id: 'concept-parent',
       label: 'Parent Concept',
       relation: 'broader',
     })
     expect(results[0]?.neighbors).toContainEqual({
-      identifier: 'concept-child',
+      id: 'concept-child',
       label: 'Child Concept',
       relation: 'narrower',
     })
     expect(results[0]?.neighbors).toContainEqual({
-      identifier: 'concept-sibling',
+      id: 'concept-sibling',
       label: 'Sibling Concept',
       relation: 'related',
     })
@@ -377,7 +377,7 @@ describe('searchConcepts — neighbors auto-expansion', () => {
     )
 
     // concept-dup appears in both broader and related — kept once (first seen wins)
-    const dupNeighbors = results[0]?.neighbors.filter((n) => n.identifier === 'concept-dup')
+    const dupNeighbors = results[0]?.neighbors.filter((n) => n.id === 'concept-dup')
     expect(dupNeighbors).toHaveLength(1)
     expect(results[0]?.neighbors).toHaveLength(2)
   })
