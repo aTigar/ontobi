@@ -16,6 +16,12 @@ export interface ConceptCandidate {
   aliases: string[]
   /** Vault-relative file path, decoded from the named graph URI. */
   filePath: string
+  /**
+   * Total SKOS link count (broader + narrower + related).
+   * Used by Tier 4 hub-node damping (#50) to reduce scores for
+   * heavily-connected concepts that match generic tokens.
+   */
+  linkCount: number
 }
 
 /**
@@ -51,7 +57,33 @@ export async function fetchCandidatePool(sparql: SparqlClient): Promise<ConceptC
     ORDER BY ?identifier
   `
 
-  const rows = await sparql.select(query)
+  // Second query: count SKOS links per concept for hub-node damping (#50).
+  // Counts broader + narrower + related in one pass.
+  const linkCountQuery = `
+    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+    PREFIX schema: <https://schema.org/>
+
+    SELECT ?identifier (COUNT(DISTINCT ?target) AS ?linkCount) WHERE {
+      ?concept schema:identifier ?identifier .
+      ?concept ?pred ?target .
+      VALUES ?pred { skos:broader skos:narrower skos:related }
+      ?target schema:identifier ?targetId .
+    }
+    GROUP BY ?identifier
+  `
+
+  const [rows, linkRows] = await Promise.all([
+    sparql.select(query),
+    sparql.select(linkCountQuery),
+  ])
+
+  // Build link-count lookup.
+  const linkCounts = new Map<string, number>()
+  for (const row of linkRows) {
+    const id = row['identifier']
+    const count = parseInt(row['linkCount'] ?? '0', 10)
+    if (id) linkCounts.set(id, count)
+  }
 
   // Group by identifier; collect altLabels into an array, dedup.
   const byIdent = new Map<string, ConceptCandidate>()
@@ -75,6 +107,7 @@ export async function fetchCandidatePool(sparql: SparqlClient): Promise<ConceptC
         definition,
         aliases: altLabel ? [altLabel] : [],
         filePath: graphUri ? graphUriToRelPath(graphUri) : '',
+        linkCount: linkCounts.get(identifier) ?? 0,
       })
     }
   }

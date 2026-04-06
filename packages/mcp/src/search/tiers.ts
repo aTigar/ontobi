@@ -149,7 +149,9 @@ export function tierPhraseSubstring(
  *
  *     bonus = (all query tokens matched across fields) ? TOKEN_COUNT × ALL_BONUS : 0
  *
- *     score = base + bonus
+ *     dampingFactor = 1 / (1 + DAMPING_K × linkCount)   [hub-node damping #50]
+ *
+ *     score = (base + bonus) × dampingFactor
  *
  * - LABEL_WEIGHT=4 is deliberately larger than DEF_CAP×DEF_WEIGHT=2, so
  *   a single label hit dominates any number of definition hits. This is
@@ -173,6 +175,17 @@ const DEF_WEIGHT = 1
 const DEF_CAP = 2
 /** Per-token bonus when all tokens matched across any field. */
 const ALL_TOKENS_BONUS = 0.5
+/**
+ * Hub-node damping coefficient (#50). Controls how strongly high-linkCount
+ * concepts are penalised.
+ *
+ *   dampingFactor = 1 / (1 + DAMPING_K × linkCount)
+ *
+ * With K=0.1: linkCount 0 → 1.0, 5 → 0.67, 13 → 0.43, 17 → 0.37.
+ * A concept with 13 links (e.g. LLM Security) needs ~2.3× the raw token
+ * score to rank equally with an unlinked concept.
+ */
+const DAMPING_K = 0.1
 
 export function tierTokenMatch(
   tokens: readonly string[],
@@ -211,7 +224,14 @@ export function tierTokenMatch(
 
     const base = labelHits * LABEL_WEIGHT + aliasHits * ALIAS_WEIGHT + defHits * DEF_WEIGHT
     const bonus = allMatched ? tokens.length * ALL_TOKENS_BONUS : 0
-    const score = base + bonus
+    const raw = base + bonus
+
+    // Hub-node damping (#50): reduce score for heavily-connected concepts
+    // that match on generic tokens (e.g. "security", "attack"). Leaf
+    // concepts with linkCount=0 are unaffected.
+    const dampingFactor = 1 / (1 + DAMPING_K * c.linkCount)
+    const score = raw * dampingFactor
+
     out.push({ candidate: c, tier: 4, score })
   }
   return out

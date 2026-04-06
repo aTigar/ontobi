@@ -18,7 +18,8 @@ const cc = (
   definition: string,
   aliases: string[] = [],
   filePath = '',
-): ConceptCandidate => ({ identifier, label, definition, aliases, filePath })
+  linkCount = 0,
+): ConceptCandidate => ({ identifier, label, definition, aliases, filePath, linkCount })
 
 const POOL: ConceptCandidate[] = [
   cc('concept-rbac', 'Role-Based Access Control',
@@ -216,6 +217,51 @@ describe('tierTokenMatch', () => {
       cc('concept-lakehouse', 'Lakehouse', ''),
     ]
     expect(tierTokenMatch(['lake'], pool)).toHaveLength(0)
+  })
+
+  it('applies hub-node damping: high linkCount reduces score (#50)', () => {
+    // Two concepts with identical label tokens but different link counts.
+    // The hub (linkCount=13, like LLM Security) should score lower.
+    const pool: ConceptCandidate[] = [
+      cc('concept-leaf', 'Security Testing', '', [], '', 0),
+      cc('concept-hub', 'Security Testing', '', [], '', 13),
+    ]
+    const hits = tierTokenMatch(['security', 'testing'], pool)
+    const leaf = hits.find((h) => h.candidate.identifier === 'concept-leaf')!
+    const hub = hits.find((h) => h.candidate.identifier === 'concept-hub')!
+    expect(leaf.score).toBeGreaterThan(hub.score)
+  })
+
+  it('hub damping does not affect concepts with linkCount=0', () => {
+    const pool: ConceptCandidate[] = [
+      cc('concept-zero', 'Foo Bar', '', [], '', 0),
+      cc('concept-linked', 'Foo Bar', '', [], '', 10),
+    ]
+    const hits = tierTokenMatch(['foo'], pool)
+    const zero = hits.find((h) => h.candidate.identifier === 'concept-zero')!
+    const linked = hits.find((h) => h.candidate.identifier === 'concept-linked')!
+    // linkCount=0 → damping factor 1.0 → full score preserved
+    // linkCount=10 → damping factor 0.5 → half score
+    expect(zero.score).toBeGreaterThan(linked.score)
+    expect(zero.score).toBe(linked.score * 2)
+  })
+
+  it('hub damping ranks specific concept above generic hub for same query', () => {
+    // Simulates the real benchmark case: "injection attack controls"
+    // LLM Security (hub, 13 links) has "security" in label → score 4 * 0.43 = 1.74
+    // SQL Injection (leaf, 2 links) has "injection" in label → score 4 * 0.83 = 3.33
+    const pool: ConceptCandidate[] = [
+      cc('concept-llm-security', 'LLM Security',
+        'attacks including prompt injection, data poisoning, model inversion',
+        [], '', 13),
+      cc('concept-sql-injection', 'SQL Injection',
+        'A code injection technique that exploits a security vulnerability',
+        [], '', 2),
+    ]
+    const hits = tierTokenMatch(['injection', 'security'], pool)
+    const byScore = hits.slice().sort((a, b) => b.score - a.score)
+    // SQL Injection should rank above LLM Security despite both matching
+    expect(byScore[0]?.candidate.identifier).toBe('concept-sql-injection')
   })
 })
 
