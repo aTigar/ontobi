@@ -48,9 +48,11 @@ server.registerTool(
     title: 'Search Concepts',
     description:
       'Search for concepts in the knowledge base by keyword. ' +
-      'Matches against concept labels and definitions. ' +
-      'Returns concept metadata (no document bodies). ' +
-      'Use this first to find relevant concept identifiers.',
+      'Matches against concept labels, aliases, and definitions using a multi-tier engine. ' +
+      'Each result includes 1-hop SKOS neighbors (broader, narrower, related concepts) ' +
+      'so you can discover the local graph topology without a separate call. ' +
+      'Inspect the `neighbors` field to find related concepts worth exploring. ' +
+      'Returns concept metadata only — use get_concept_content to load full bodies.',
     inputSchema: searchConceptsInput,
   },
   async (input) => {
@@ -66,10 +68,10 @@ server.registerTool(
   {
     title: 'Expand Concept Graph',
     description:
-      'Traverse the SKOS ontology from a concept outward, returning its neighbourhood. ' +
-      'Uses SPARQL property paths over broader/narrower/related relations. ' +
-      'Returns node + edge metadata only — no document bodies. ' +
-      'Use after search_concepts to understand concept relationships before loading content.',
+      'Traverse the SKOS ontology from a concept outward up to N hops. ' +
+      'Returns nodes and edges (broader/narrower/related) — no document bodies. ' +
+      'search_concepts already includes 1-hop neighbors; use this tool for deeper ' +
+      'traversal (depth 2+) or when you need the full edge structure.',
     inputSchema: expandConceptGraphInput,
   },
   async (input) => {
