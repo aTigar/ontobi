@@ -27,9 +27,9 @@ class MockSparqlClient {
 }
 
 // Helper: matches the candidate-pool query (fetches all concepts with
-// identifier, label, definition, altLabel).
+// identifier, label, definition, altLabel, graph).
 const isPoolQuery = (q: string): boolean =>
-  q.includes('?identifier ?label ?definition ?altLabel') && !q.includes('FILTER')
+  q.includes('?identifier ?label ?definition ?altLabel ?graph') && !q.includes('FILTER')
 
 // Helper: matches the per-hit relation query (broader/related lookup by VALUES).
 const isRelationQuery = (q: string): boolean =>
@@ -43,8 +43,8 @@ describe('searchConcepts — candidate pool', () => {
       (q) =>
         isPoolQuery(q)
           ? [
-              { identifier: 'concept-rbac', label: 'Role-Based Access Control', altLabel: 'RBAC' },
-              { identifier: 'concept-foo', label: 'Foo' },
+              { identifier: 'concept-rbac', label: 'Role-Based Access Control', altLabel: 'RBAC', graph: 'file:///_concepts/Role-Based%20Access%20Control.md' },
+              { identifier: 'concept-foo', label: 'Foo', graph: 'file:///_concepts/Foo.md' },
             ]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
@@ -63,8 +63,8 @@ describe('searchConcepts — candidate pool', () => {
       (q) =>
         isPoolQuery(q)
           ? [
-              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'GDPR' },
-              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'DSGVO' },
+              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'GDPR', graph: 'file:///_concepts/General%20Data%20Protection%20Regulation.md' },
+              { identifier: 'concept-gdpr', label: 'General Data Protection Regulation', altLabel: 'DSGVO', graph: 'file:///_concepts/General%20Data%20Protection%20Regulation.md' },
             ]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
@@ -83,8 +83,12 @@ describe('searchConcepts — candidate pool', () => {
 // ── Tier matching end-to-end ─────────────────────────────────────────────────
 
 describe('searchConcepts — tier matching', () => {
-  const poolRow = (identifier: string, label: string, definition = '', altLabel?: string) =>
-    altLabel ? { identifier, label, definition, altLabel } : { identifier, label, definition }
+  const poolRow = (identifier: string, label: string, definition = '', altLabel?: string) => {
+    const graph = `file:///_concepts/${label}.md`
+    return altLabel
+      ? { identifier, label, definition, altLabel, graph }
+      : { identifier, label, definition, graph }
+  }
 
   const smallPool = [
     poolRow('concept-rbac', 'Role-Based Access Control', 'Access control model.', 'RBAC'),
@@ -159,6 +163,29 @@ describe('searchConcepts — tier matching', () => {
       expect(typeof r.match_score).toBe('number')
     }
   })
+
+  it('includes file_path decoded from the named graph URI', async () => {
+    const results = await searchConcepts(
+      { query: 'Role-Based Access Control', limit: 10 },
+      makeMock() as unknown as SparqlClient,
+    )
+    expect(results[0]?.file_path).toBe('_concepts/Role-Based Access Control.md')
+  })
+
+  it('decodes percent-encoded spaces in file_path', async () => {
+    const mock = new MockSparqlClient([
+      (q) =>
+        isPoolQuery(q)
+          ? [{ identifier: 'concept-cia', label: 'CIA Triad', definition: 'Security model.', graph: 'file:///_concepts/CIA%20Triad.md' }]
+          : null,
+      (q) => (isRelationQuery(q) ? [] : null),
+    ])
+    const results = await searchConcepts(
+      { query: 'CIA Triad', limit: 10 },
+      mock as unknown as SparqlClient,
+    )
+    expect(results[0]?.file_path).toBe('_concepts/CIA Triad.md')
+  })
 })
 
 // ── broader/related per-hit relation fetching ────────────────────────────────
@@ -168,7 +195,7 @@ describe('searchConcepts — broader/related per-hit lookup', () => {
     const mock = new MockSparqlClient([
       (q) =>
         isPoolQuery(q)
-          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '', graph: 'file:///_concepts/Foo.md' }]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
     ])
@@ -182,7 +209,7 @@ describe('searchConcepts — broader/related per-hit lookup', () => {
     const mock = new MockSparqlClient([
       (q) =>
         isPoolQuery(q)
-          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '', graph: 'file:///_concepts/Foo.md' }]
           : null,
       (q) =>
         isRelationQuery(q)
@@ -210,7 +237,7 @@ describe('searchConcepts — broader/related per-hit lookup', () => {
     const mock = new MockSparqlClient([
       (q) =>
         isPoolQuery(q)
-          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '' }]
+          ? [{ identifier: 'concept-foo', label: 'Foo', definition: '', graph: 'file:///_concepts/Foo.md' }]
           : null,
       (q) =>
         isRelationQuery(q)
@@ -235,7 +262,7 @@ describe('searchConcepts — broader/related per-hit lookup', () => {
     const mock = new MockSparqlClient([
       (q) =>
         isPoolQuery(q)
-          ? [{ identifier: 'concept-solo', label: 'Solo', definition: '' }]
+          ? [{ identifier: 'concept-solo', label: 'Solo', definition: '', graph: 'file:///_concepts/Solo.md' }]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
     ])
@@ -253,7 +280,7 @@ describe('searchConcepts — broader/related per-hit lookup', () => {
     const mock = new MockSparqlClient([
       (q) =>
         isPoolQuery(q)
-          ? [{ identifier: 'concept-x', label: 'X', definition: '' }]
+          ? [{ identifier: 'concept-x', label: 'X', definition: '', graph: 'file:///_concepts/X.md' }]
           : null,
       (q) => (isRelationQuery(q) ? [] : null),
     ])

@@ -94,7 +94,21 @@ server.registerTool(
   async (input) => {
     const result = await getConceptContent(input, sparql, vaultPath!)
     return {
-      content: [{ type: 'text', text: result.content }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              identifier: result.identifier,
+              label: result.label,
+              file_path: result.filePath,
+              content: result.content,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
     }
   },
 )

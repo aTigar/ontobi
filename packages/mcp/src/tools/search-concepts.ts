@@ -28,6 +28,8 @@ export interface ConceptSummary {
   identifier: string
   label: string
   definition: string
+  /** Vault-relative file path (forward-slash, no URL encoding). */
+  file_path: string
   /** All `skos:altLabel` values (from `aliases:` frontmatter). */
   aliases: string[]
   broader: string[]
@@ -120,6 +122,7 @@ export async function searchConcepts(
         identifier: candidate.identifier,
         label: candidate.label,
         definition: candidate.definition,
+        file_path: candidate.filePath,
         aliases: candidate.aliases,
         broader,
         related,

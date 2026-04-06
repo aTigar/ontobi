@@ -11,44 +11,33 @@ import {
 
 // ── Test fixture: a small representative concept pool ────────────────────────
 
+/** Helper: create a ConceptCandidate with sensible defaults for test fixtures. */
+const cc = (
+  identifier: string,
+  label: string,
+  definition: string,
+  aliases: string[] = [],
+  filePath = '',
+): ConceptCandidate => ({ identifier, label, definition, aliases, filePath })
+
 const POOL: ConceptCandidate[] = [
-  {
-    identifier: 'concept-rbac',
-    label: 'Role-Based Access Control',
-    definition:
-      'An access control model in which permissions are associated with named roles.',
-    aliases: ['RBAC'],
-  },
-  {
-    identifier: 'concept-gdpr',
-    label: 'General Data Protection Regulation',
-    definition: 'EU regulation on data protection and privacy.',
-    aliases: ['GDPR', 'Regulation (EU) 2016/679'],
-  },
-  {
-    identifier: 'concept-sast',
-    label: 'Static Application Security Testing',
-    definition: 'Analyses source code without executing it.',
-    aliases: ['SAST', 'Static Code Analysis'],
-  },
-  {
-    identifier: 'concept-dast',
-    label: 'Dynamic Application Security Testing',
-    definition: 'Tests a running application for security flaws.',
-    aliases: ['DAST'],
-  },
-  {
-    identifier: 'concept-vulnerability',
-    label: 'Vulnerability',
-    definition: 'A weakness that can be exploited by a threat actor.',
-    aliases: [],
-  },
-  {
-    identifier: 'concept-authentication',
-    label: 'Authentication',
-    definition: 'The process of verifying identity.',
-    aliases: ['AuthN'],
-  },
+  cc('concept-rbac', 'Role-Based Access Control',
+    'An access control model in which permissions are associated with named roles.',
+    ['RBAC']),
+  cc('concept-gdpr', 'General Data Protection Regulation',
+    'EU regulation on data protection and privacy.',
+    ['GDPR', 'Regulation (EU) 2016/679']),
+  cc('concept-sast', 'Static Application Security Testing',
+    'Analyses source code without executing it.',
+    ['SAST', 'Static Code Analysis']),
+  cc('concept-dast', 'Dynamic Application Security Testing',
+    'Tests a running application for security flaws.',
+    ['DAST']),
+  cc('concept-vulnerability', 'Vulnerability',
+    'A weakness that can be exploited by a threat actor.'),
+  cc('concept-authentication', 'Authentication',
+    'The process of verifying identity.',
+    ['AuthN']),
 ]
 
 // ── Tier 1: EXACT_LABEL ───────────────────────────────────────────────────────
@@ -178,18 +167,8 @@ describe('tierTokenMatch', () => {
     // only mentions them in its definition — is a weak bridging match and
     // must be excluded so the real target concepts surface.
     const bridgingPool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-bridge',
-        label: 'Some Bridge',
-        definition: 'Combines foo with bar for quux workloads.',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-foo',
-        label: 'Foo',
-        definition: 'The Foo concept.',
-        aliases: [],
-      },
+      cc('concept-bridge', 'Some Bridge', 'Combines foo with bar for quux workloads.'),
+      cc('concept-foo', 'Foo', 'The Foo concept.'),
     ]
     const hits = tierTokenMatch(['foo', 'bar', 'quux'], bridgingPool)
     expect(hits.find((h) => h.candidate.identifier === 'concept-bridge')).toBeUndefined()
@@ -200,18 +179,8 @@ describe('tierTokenMatch', () => {
     // Compare two concepts where one matches all tokens (bonus) and the
     // other matches only some (no bonus).
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-all',
-        label: 'Foo Bar',
-        definition: 'Relates to Quux.',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-some',
-        label: 'Foo Bar',
-        definition: 'Just some words.',
-        aliases: [],
-      },
+      cc('concept-all', 'Foo Bar', 'Relates to Quux.'),
+      cc('concept-some', 'Foo Bar', 'Just some words.'),
     ]
     // tokens include "quux" which only concept-all has (in definition)
     const hits = tierTokenMatch(['foo', 'bar', 'quux'], pool)
@@ -224,18 +193,8 @@ describe('tierTokenMatch', () => {
     // Deliberately constructed: one concept has 1 label hit,
     // another has 5 definition hits. Label must still win.
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-label-only',
-        label: 'Foo Banana',
-        definition: '',
-        aliases: [],
-      },
-      {
-        identifier: 'concept-def-heavy',
-        label: 'Unrelated Thing',
-        definition: 'banana banana banana banana banana',
-        aliases: [],
-      },
+      cc('concept-label-only', 'Foo Banana', ''),
+      cc('concept-def-heavy', 'Unrelated Thing', 'banana banana banana banana banana'),
     ]
     const hits = tierTokenMatch(['banana'], pool)
     const byScore = hits.slice().sort((a, b) => b.score - a.score)
@@ -254,12 +213,7 @@ describe('tierTokenMatch', () => {
     // "lake" must NOT match a label containing "lakehouse" via TOKEN_MATCH,
     // because that would surface bridging concepts over real targets.
     const pool: ConceptCandidate[] = [
-      {
-        identifier: 'concept-lakehouse',
-        label: 'Lakehouse',
-        definition: '',
-        aliases: [],
-      },
+      cc('concept-lakehouse', 'Lakehouse', ''),
     ]
     expect(tierTokenMatch(['lake'], pool)).toHaveLength(0)
   })

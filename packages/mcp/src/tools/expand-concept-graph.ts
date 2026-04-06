@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { SparqlClient } from '../sparql-client.js'
+import { graphUriToRelPath } from '../file-reader.js'
 
 export const expandConceptGraphInput = z.object({
   concept_id: z
@@ -26,6 +27,8 @@ export interface GraphNode {
   id: string
   label: string
   definition: string
+  /** Vault-relative file path (forward-slash, no URL encoding). */
+  file_path: string
 }
 
 export interface GraphEdge {
@@ -86,13 +89,15 @@ export async function expandConceptGraph(
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
     PREFIX schema: <https://schema.org/>
 
-    SELECT DISTINCT ?node ?label ?identifier ?definition WHERE {
+    SELECT DISTINCT ?node ?label ?identifier ?definition ?graph WHERE {
       ${nodePathUnion(subjectUri, input.depth)}
       UNION
       { BIND(<${subjectUri}> AS ?node) }
-      ?node schema:identifier ?identifier .
-      ?node skos:prefLabel ?label .
-      OPTIONAL { ?node skos:definition ?definition . }
+      GRAPH ?graph {
+        ?node schema:identifier ?identifier .
+        ?node skos:prefLabel ?label .
+        OPTIONAL { ?node skos:definition ?definition . }
+      }
     }
   `
 
@@ -123,10 +128,12 @@ ${intermediateUnion(subjectUri, input.depth)}
     const id = row['identifier'] ?? ''
     if (!id || seenNodes.has(id)) continue
     seenNodes.add(id)
+    const graphUri = row['graph'] ?? ''
     nodes.push({
       id,
       label: row['label'] ?? id,
       definition: row['definition'] ?? '',
+      file_path: graphUri ? graphUriToRelPath(graphUri) : '',
     })
   }
 
