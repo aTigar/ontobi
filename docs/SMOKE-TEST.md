@@ -1,4 +1,4 @@
-# Ontobi MVP — Smoke Test
+# Ontobi MVP: Smoke Test
 
 Validates the full pipeline on the live vault:
 `.md files → ontobi-core (SPARQL) → @ontobi/mcp (MCP tools)`
@@ -19,7 +19,7 @@ Validates the full pipeline on the live vault:
 
 > [!WARNING] Windows PATH requirement
 > `cargo` on this project uses the MSYS2 GNU linker. Without it the build fails
-> with `dlltool.exe: program not found`. Set the PATH before calling `cargo` —
+> with `dlltool.exe: program not found`. Set the PATH before calling `cargo`,
 > either per-command in Git Bash or once per session in PowerShell.
 
 **Git Bash:**
@@ -35,7 +35,7 @@ $env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH
 cargo build --release
 ```
 
-First run takes ~60–90 s (Cargo downloads and compiles all dependencies).
+First run takes around 60 to 90 seconds (Cargo downloads and compiles all dependencies).
 Subsequent runs are incremental and take a few seconds.
 
 The binary lands at `target\release\ontobi.exe` (workspace root).
@@ -44,7 +44,7 @@ The binary lands at `target\release\ontobi.exe` (workspace root).
 
 ## 2. Start the server
 
-Open a dedicated terminal — this command blocks. Keep it running for all steps below.
+Open a dedicated terminal. This command blocks, so keep it running for all steps below.
 
 **Git Bash:**
 
@@ -124,14 +124,19 @@ server is not running or mirrored networking is not active.
 
 ---
 
-### 3.2 ASK — does concept-centroid exist?
+### 3.2 ASK: does concept-centroid exist?
 
 ```bash
-sparql "ASK { <urn:ontobi:concept:concept-centroid> ?p ?o }"
+sparql "ASK { <urn:ontobi:item:concept-centroid> ?p ?o }"
 ```
 
-`ASK` returns a boolean — the cheapest existence check. `?p ?o` matches any
+`ASK` returns a boolean, the cheapest existence check. `?p ?o` matches any
 predicate and object, so this passes as long as any triple for this subject exists.
+
+> Note: the subject URI prefix is `urn:ontobi:item:` (renamed from the earlier
+> `urn:ontobi:concept:` when the generic `ParsedItem` parser landed so SKOS concepts
+> and CSL bibliography entries share one URI scheme). If you have an older
+> `.ontobi/store.nq` on disk, delete it and re-index.
 
 **Expected:**
 
@@ -141,12 +146,12 @@ predicate and object, so this passes as long as any triple for this subject exis
 }
 ```
 
-`false` means `Centroid.md` was not indexed — check that its frontmatter contains
+`false` means `Centroid.md` was not indexed. Check that its frontmatter contains
 `identifier: concept-centroid`.
 
 ---
 
-### 3.3 COUNT — how many concepts are indexed?
+### 3.3 COUNT: how many concepts are indexed?
 
 ```bash
 sparql "
@@ -163,21 +168,21 @@ are excluded because they produce no such triple.
 
 ---
 
-### 3.4 SELECT — fetch Centroid's metadata
+### 3.4 SELECT: fetch Centroid's metadata
 
 ```bash
 sparql "
   PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
   SELECT ?label ?definition WHERE {
-    <urn:ontobi:concept:concept-centroid>
+    <urn:ontobi:item:concept-centroid>
         skos:prefLabel  ?label ;
         skos:definition ?definition .
   }
 "
 ```
 
-The `;` is SPARQL shorthand for "same subject, next predicate". Returns the label
-and definition stored as RDF literals.
+The `;` inside the SPARQL body is turtle shorthand for "same subject, next predicate".
+Returns the label and definition stored as RDF literals.
 
 **Expected values must match `_concepts/Centroid.md` frontmatter:**
 
@@ -196,14 +201,14 @@ and definition stored as RDF literals.
 
 ---
 
-### 3.5 SKOS traversal — neighbours of concept-centroid
+### 3.5 SKOS traversal: neighbours of concept-centroid
 
 ```bash
 sparql "
   PREFIX skos:   <http://www.w3.org/2004/02/skos/core#>
   PREFIX schema: <https://schema.org/>
   SELECT ?relation ?neighbourId ?neighbourLabel WHERE {
-    <urn:ontobi:concept:concept-centroid> ?pred ?neighbour .
+    <urn:ontobi:item:concept-centroid> ?pred ?neighbour .
     VALUES ?pred { skos:broader skos:narrower skos:related }
     ?neighbour schema:identifier ?neighbourId ;
                skos:prefLabel    ?neighbourLabel .
@@ -232,7 +237,7 @@ converted to `concept-k-means-clustering` at index time.
 
 > [!NOTE] `node` not recognised in PowerShell?
 > Node.js is installed but PowerShell caches the PATH from when it opened.
-> **Close and reopen PowerShell** — Node will be found in the new session.
+> **Close and reopen PowerShell**. Node will be found in the new session.
 > If it still fails, run `$env:PATH += ";C:\Program Files\nodejs"` to add it manually.
 
 ### 4.1 Build the TypeScript packages
@@ -257,7 +262,7 @@ their respective `dist/` folders. The MCP server entry point ends up at
 
 ### 4.2 Start the MCP server
 
-The MCP server communicates over **stdio** — it is designed to be launched as a
+The MCP server communicates over **stdio**. It is designed to be launched as a
 subprocess by an MCP host (Claude Code, Claude Desktop) which pipes JSON-RPC
 messages to its stdin and reads responses from stdout. It **cannot be curled**
 directly. This step only verifies that it starts cleanly and connects to the
@@ -292,17 +297,17 @@ Three lines printed without an error means:
 
 - The process started correctly
 - `ONTOBI_VAULT_PATH` was read from the environment
-- The stdio transport initialised (it does **not** verify the SPARQL connection at startup — that happens on the first tool call)
+- The stdio transport initialised (it does **not** verify the SPARQL connection at startup, that happens on the first tool call)
 
 ### 4.3 Verify tool calls via Claude Code
 
 Wire the MCP server to Claude Code by adding it to your MCP config, then prompt:
 
-| Tool                   | Example prompt                                                | What to check                                                      |
-| ---------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `search_concepts`      | "Use search_concepts to find concepts about clustering"       | Returns labels + definitions only — no `.md` body text             |
-| `expand_concept_graph` | "Use expand_concept_graph with concept_id='concept-centroid'" | Returns nodes + edges; default depth=1 (immediate neighbours only) |
-| `get_concept_content`  | "Use get_concept_content with concept_id='concept-centroid'"  | Returns full `Centroid.md` body including math and code blocks     |
+| Tool                   | Example prompt                                                | What to check                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_concepts`      | "Use search_concepts to find concepts about clustering"       | Returns an array of `{ identifier, label, definition, file_path, aliases, broader, narrower, related }`. No `.md` body text. `file_path` is vault-relative. |
+| `expand_concept_graph` | "Use expand_concept_graph with concept_id='concept-centroid'" | Returns `{ center, depth, nodes, edges }`. Default depth 1 (immediate neighbours only). Each node has `file_path` and `aliases`.                     |
+| `get_concept_content`  | "Use get_concept_content with concept_id='concept-centroid'"  | Returns `{ identifier, label, file_path, content }`. `content` is the full `Centroid.md` body including math and code blocks.                        |
 
 ---
 
@@ -317,7 +322,7 @@ INFO ontobi_core::watcher: shutting down…
 INFO ontobi_core::watcher: store saved path=.../.ontobi/store.nq
 ```
 
-Verify the file was written (WSL — Windows drives are mounted under `/mnt/`):
+Verify the file was written (WSL mounts Windows drives under `/mnt/`):
 
 ```bash
 ls -lh /mnt/<drive>/<path-to-vault>/.ontobi/store.nq
@@ -329,7 +334,7 @@ Restart without `--index` to confirm the store restores from disk:
 ./target/release/ontobi serve --vault "<vault>"
 ```
 
-Run the COUNT query from step 3.3 again — the result must match.
+Run the COUNT query from step 3.3 again. The result must match.
 
 ---
 
@@ -352,6 +357,5 @@ Run the COUNT query from step 3.3 again — the result must match.
 
 ## Known issues
 
-| Issue                                                                                  | Status         |
-| -------------------------------------------------------------------------------------- | -------------- |
-| `QUERIES.md` missing — issue #10 references 17 benchmark queries that do not exist yet | Needs creation |
+None at the time of writing. Benchmark queries referenced by earlier issue trackers
+now live in the separate `ontobi-bench` repository, not in this repo.
